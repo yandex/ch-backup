@@ -96,35 +96,6 @@ Feature: Detached parts backup and restore
     2	1
     """
 
-  Scenario: Back up and restore a user-named restore workspace
-    Given we have executed queries on clickhouse01
-    """
-    CREATE DATABASE detached_db;
-    CREATE TABLE detached_db.reserved_name (id UInt32)
-      ENGINE = MergeTree PARTITION BY id ORDER BY id;
-    INSERT INTO detached_db.reserved_name VALUES (1), (2);
-    ALTER TABLE detached_db.reserved_name DETACH PARTITION 1;
-    """
-    And we have executed command on clickhouse01
-    """
-    set -e
-    table_path=$(clickhouse-client -q "SELECT data_paths[1] FROM system.tables WHERE database='detached_db' AND name='reserved_name' FORMAT TSVRaw")
-    cd "$table_path/detached"
-    mv -- 1_* .ch-backup-restore
-    """
-    When we create clickhouse01 clickhouse backup
-    """
-    tables: [detached_db.reserved_name]
-    detached_parts: true
-    detached_parts_disks: [default]
-    """
-    Then detached archives of "detached_db"."reserved_name" on disk "default" in clickhouse01 backup #0 match source parts
-    When we restore clickhouse backup #0 to clickhouse02
-    """
-    restore_detached_parts: true
-    """
-    Then detached archives of "detached_db"."reserved_name" on disk "default" in clickhouse01 backup #0 match parts with suffix "_try1" on clickhouse02
-
   Scenario: Detached parts are not backed up by default
     Given we have executed queries on clickhouse01
     """
@@ -273,6 +244,11 @@ Feature: Detached parts backup and restore
     ALTER TABLE detached_db.local_only DETACH PARTITION 1;
     ALTER TABLE detached_db.excluded_object_storage DETACH PARTITION 2;
     """
+    And we have executed command on clickhouse01
+    """
+    table_path=$(clickhouse-client -q "SELECT data_paths[1] FROM system.tables WHERE database='detached_db' AND name='local_only' FORMAT TSVRaw")
+    cp -a -- "$table_path"/detached/1_* "$table_path/detached/.ch-backup-restore"
+    """
     When we create clickhouse01 clickhouse backup
     """
     databases:
@@ -282,6 +258,7 @@ Feature: Detached parts backup and restore
       - default
       - s3
     """
+    Then detached archives of "detached_db"."local_only" on disk "default" in clickhouse01 backup #0 match source parts
     When we drop all databases at clickhouse02
     And we restore clickhouse backup #0 to clickhouse02
     """
@@ -304,13 +281,18 @@ Feature: Detached parts backup and restore
     """
     SELECT table, count()
     FROM system.detached_parts
-    WHERE database = 'detached_db'
+    WHERE database = 'detached_db' AND name != '.ch-backup-restore_try1'
     GROUP BY table
     FORMAT TSV
     """
     Then we get response
     """
     local_only	1
+    """
+    When we execute command on clickhouse02
+    """
+    table_path=$(clickhouse-client -q "SELECT data_paths[1] FROM system.tables WHERE database='detached_db' AND name='local_only' FORMAT TSVRaw")
+    diff -r -- "$table_path"/detached/1_* "$table_path/detached/.ch-backup-restore_try1"
     """
 
   @require_version_22.8

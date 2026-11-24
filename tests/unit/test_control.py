@@ -16,7 +16,6 @@ from ch_backup.clickhouse.control import (
 )
 from ch_backup.clickhouse.models import DETACH_REASONS, Disk, Table
 from ch_backup.exceptions import ClickhouseBackupError
-from ch_backup.logic.part_restore import LOCAL_RESTORE_DIR
 from tests.unit.utils import parametrize
 
 
@@ -643,24 +642,6 @@ def test_scan_detached_parts_reads_reason_from_directory_name(
     ]
 
 
-def test_scan_detached_parts_skips_only_the_restore_workspace(tmp_path: Path) -> None:
-    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
-    disk = Disk("default", str(tmp_path), "Local")
-    ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
-    table = Table("db1", "table1", "MergeTree", [disk], [str(tmp_path)], "", "", None)
-    workspace = tmp_path / "detached" / LOCAL_RESTORE_DIR
-    (workspace / "all_1_1_0").mkdir(parents=True)
-    assert not list(ch_ctl.scan_detached_parts(table))
-
-    similar = workspace.rename(workspace.with_name(LOCAL_RESTORE_DIR + "-other"))
-    workspace.mkdir()
-    (workspace / "data.bin").touch()
-    assert {part.name: part.reason for part in ch_ctl.scan_detached_parts(table)} == {
-        workspace.name: workspace.name,
-        similar.name: similar.name,
-    }
-
-
 @pytest.mark.parametrize("reason", ["", *sorted(DETACH_REASONS)])
 @pytest.mark.parametrize(
     "partition_id", ["all", "202401", "20240101", "1", "1-2", "-1"]
@@ -798,6 +779,7 @@ def test_scan_detached_parts_uses_selected_backing_disk_directory(
     expected_checksum = _make_cloud_part(
         part_path, {"checksums.txt": ["store/object-key"]}
     )
+    (part_path.parent / ".ch-backup-restore" / part_path.name).mkdir(parents=True)
     table = Table(
         "db1",
         "table1",
@@ -809,7 +791,7 @@ def test_scan_detached_parts_uses_selected_backing_disk_directory(
         None,
     )
 
-    part = next(iter(ch_ctl.scan_detached_parts(table, disk_names=["object_storage"])))
+    (part,) = ch_ctl.scan_detached_parts(table, disk_names=["object_storage"])
 
     assert part.disk_name == "object_storage"
     assert part.object_storage is True

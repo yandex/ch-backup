@@ -137,40 +137,6 @@ def test_restore_attaches_parts_in_source_order(tmp_path, newest_source):
     assert all(context.restore_context.part_restored(part) for part in parts)
 
 
-def test_restore_clears_only_local_workspaces_for_already_restored_parts(
-    tmp_path,
-):
-    context = _make_backup_context()
-    context.config["restore_context_path"] = str(tmp_path / "restore.json")
-    metadata = TableMetadata("db1", "tbl", "MergeTree", None)
-    part = PartMetadata(
-        "db1", "tbl", "all_1_1_0", "", 0, [], True, disk_name="removed_disk"
-    )
-    metadata.add_part(part)
-    context.restore_context.change_part_state(PartState.RESTORED, part)
-    context.ch_ctl = controller = Mock()
-    context.backup_layout = layout = Mock()
-    disks = [
-        Disk(name, str(tmp_path / name), kind)
-        for name, kind in [("first", "Local"), ("second", "Local"), ("archive", "S3")]
-    ]
-    controller.get_table.return_value.paths_with_disks = [
-        (disk.path, disk) for disk in disks
-    ]
-    roots = {
-        disk.name: Path(disk.path) / "detached" / ".ch-backup-restore" for disk in disks
-    }
-    for root in roots.values():
-        (root / "all_2_2_0").mkdir(parents=True)
-    TableBackup._restore_data(  # pylint: disable=protected-access
-        context, [metadata], Mock(), False, False
-    )
-    assert {name for name, root in roots.items() if root.exists()} == {"archive"}
-    controller.get_detached_part_path.assert_not_called()
-    layout.download_data_part.assert_not_called()
-    controller.attach_part.assert_not_called()
-
-
 @pytest.mark.parametrize(
     "metadata_after_freeze, freeze_error, table_exists, expected_error, expected_databases",
     [
