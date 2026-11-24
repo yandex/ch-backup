@@ -45,12 +45,17 @@ Local parts saved as `DOWNLOADED` are downloaded again on retry. Failed download
 leave the existing destination untouched. During replacement the previous part
 is moved aside until publication succeeds. If the publish rename fails, restore
 moves the old part back. If that rollback fails, the error log gives its path.
-After an interruption, wait for the previous restore and its transfer workers
-to exit before retrying on the same table and disk. The retry reuses the same
-workspace. It moves `previous/<part>` back when the destination is missing,
-removes it after a completed publication, and discards partial downloads before
-scheduling new ones. If the incoming, previous and destination paths all exist
-for a part, restore stops and preserves them for inspection. Successful restores
+Run only one restore at a time for the same table and disk, even when restoring
+disjoint sets of parts. After an interruption, wait for the previous restore and
+all its transfer workers to exit before retrying. Between the interruption and
+the retry, leave the contents of `incoming`, `previous`, and
+`detached/<part>` for affected parts as they were. The retry reuses the same
+workspace. It moves `previous/<part>` back when the destination is missing
+and discards partial downloads before scheduling new ones. If the incoming part
+is absent and its destination exists, the retry treats the publication rename
+as complete and removes the previous part. Manually removing or replacing any
+of these paths makes that inference unreliable. If all three paths exist for a
+part, restore stops and preserves them for inspection. Successful restores
 remove the workspace. Older releases used `.ch-backup-<uuid>` directories that
 cannot be matched to their destination automatically. After workers have stopped,
 inspect legacy `.ch-backup-<uuid>.previous` directories for old parts to recover
@@ -589,6 +594,17 @@ with a warning. Only successfully uploaded detached parts are added to backup
 metadata, and an individual detached-part failure does not fail the regular
 table backup. Executor failures and termination signals still abort the backup.
 
+The local restore workspace at `detached/.ch-backup-restore` is excluded from
+detached-part backups when it is empty or contains only real `incoming` and/or
+`previous` directories. Their entries must have valid MergeTree part names and
+be directories, with symlinks allowed only for entries directly under
+`previous`. A user-created directory with this exact name and layout is also
+treated as a workspace and may be removed during restore. A user-detached
+directory of the same name with other contents is eligible for backup under the
+usual disk and reason filters, even if its `checksums.txt` is missing. If a
+local part restore encounters such a directory on the destination disk, it stops
+and reports the path for inspection.
+
 Restore is also opt-in: pass `--restore-detached-parts` to a data restore.
 Without this option detached-part metadata is ignored. Enabled restores put
 the parts under the corresponding table's `detached` directory on their
@@ -598,6 +614,8 @@ directory is preserved and the part is restored with the first free
 ClickHouse-style `_tryN` suffix. A directory with matching files, size and
 checksum is treated as already restored. If the backup has no checksum,
 equality cannot be proved and `_tryN` is used.
+A backed-up directory named `.ch-backup-restore` is restored using this suffix
+convention starting at `.ch-backup-restore_try1`.
 
 ```bash
 ch-backup restore --restore-detached-parts BACKUP

@@ -8,6 +8,7 @@ from unittest.mock import Mock
 import pytest
 
 from ch_backup.backup.metadata import PartMetadata
+from ch_backup.backup.restore_workspace import LOCAL_RESTORE_DIR
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.logic.part_restore import LocalPartRestorer, check_local_part
 
@@ -161,6 +162,30 @@ def test_unexpected_workspace_entry_is_preserved(tmp_path, entry):
         restorer.prepare(tmp_path)
     assert unexpected.exists()
     assert (external / "marker").exists()
+
+
+def test_restore_preserves_user_directory_named_like_workspace(tmp_path, part):
+    root = tmp_path / LOCAL_RESTORE_DIR
+    root.mkdir()
+    (root / "checksums.txt").write_bytes(b"user checksums")
+    (root / "data.bin").write_bytes(b"user data")
+    final = tmp_path / part.name
+    final.mkdir()
+    (final / "data.bin").write_bytes(b"original data")
+    layout = Mock()
+    restorer = LocalPartRestorer(
+        layout, Mock(), keep_going=False, on_success=Mock(), on_error=Mock()
+    )
+
+    with pytest.raises(ClickhouseBackupError) as error:
+        restorer.download(part, str(final))
+
+    assert str(root) in str(error.value)
+    assert set(root.iterdir()) == {root / "checksums.txt", root / "data.bin"}
+    assert (root / "checksums.txt").read_bytes() == b"user checksums"
+    assert (root / "data.bin").read_bytes() == b"user data"
+    assert (final / "data.bin").read_bytes() == b"original data"
+    layout.download_data_part.assert_not_called()
 
 
 def test_failed_publication_and_rollback_preserve_conflict_on_retry(

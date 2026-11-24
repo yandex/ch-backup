@@ -11,10 +11,13 @@ from typing import Callable
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
-from ch_backup.backup.metadata.table_metadata import split_part_name
+from ch_backup.backup.restore_workspace import (
+    LOCAL_RESTORE_DIR,
+    is_local_restore_workspace,
+)
 from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.exceptions import ClickhouseBackupError
-from ch_backup.util import LOCAL_RESTORE_DIR, scan_dir_files
+from ch_backup.util import scan_dir_files
 
 
 def check_local_part(part: PartMetadata, path: str) -> None:
@@ -70,28 +73,13 @@ def _recover_workspace(root: Path) -> None:
         )
     if not os.path.lexists(root):
         return
-    if root.is_symlink() or not root.is_dir():
-        raise ClickhouseBackupError(f"Unexpected restore workspace: {root}")
+    if not is_local_restore_workspace(root):
+        raise ClickhouseBackupError(
+            f"Unexpected contents at restore workspace path {root}. "
+            "Inspect the path and move any user-detached part aside before retrying."
+        )
 
     incoming, previous = root / "incoming", root / "previous"
-    # Inspect the complete workspace before modifying it. A previous part
-    # may itself be a symlink if the old detached destination was one.
-    for directory in root.iterdir():
-        if (
-            directory not in (incoming, previous)
-            or directory.is_symlink()
-            or not directory.is_dir()
-        ):
-            raise ClickhouseBackupError(
-                f"Unexpected restore workspace entry: {directory}"
-            )
-        for entry in directory.iterdir():
-            split_part_name(entry.name)
-            if entry.is_symlink() and directory == previous:
-                continue
-            if entry.is_symlink() or not entry.is_dir():
-                raise ClickhouseBackupError(f"Unexpected staged part: {entry}")
-
     old_parts = list(previous.iterdir()) if previous.exists() else []
     for old in old_parts:
         destination = root.parent / old.name

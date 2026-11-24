@@ -22,6 +22,7 @@ from ch_backup.backup.deduplication import StoredFiles, deduplicate_parts
 from ch_backup.backup.metadata import DetachedPartMetadata, PartMetadata, TableMetadata
 from ch_backup.backup.metadata.table_metadata import DataSkippedReason, split_part_name
 from ch_backup.backup.restore_context import PartState
+from ch_backup.backup.restore_workspace import LOCAL_RESTORE_DIR
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseBackupDisks, ClickHouseTemporaryDisks
@@ -44,7 +45,7 @@ from ch_backup.logic.upload_part_observer import UploadPartObserver
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
     ThreadExecPool,
 )
-from ch_backup.util import LOCAL_RESTORE_DIR, compare_schema
+from ch_backup.util import compare_schema
 
 RANDOM_TABLE_NAME_LENGTH = 16
 
@@ -2091,8 +2092,8 @@ class TableBackup(BackupManager):
         directory with different contents is preserved and the first free
         ``_tryN`` name is used instead.
         """
-        # Older backups may contain a user-detached directory with the name
-        # now reserved for local restore. Treat that name as occupied.
+        # Preserve the workspace path when a backup contains a user-detached
+        # directory with the same name.
         first_try = 1 if part.name == LOCAL_RESTORE_DIR else 0
         for try_no in count(first_try):
             restore_part = (

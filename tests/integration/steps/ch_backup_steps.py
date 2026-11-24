@@ -280,14 +280,7 @@ def step_detached_archives_match_source(context, db, table, disk, node, backup_i
     )
     assert_that(bool(archives), equal_to(True), "No detached archives were found")
 
-    data_paths = (
-        ClickhouseClient(context, node)
-        .get_response(
-            f"SELECT arrayJoin(data_paths) FROM system.tables "
-            f"WHERE database = '{db}' AND name = '{table}' FORMAT TSVRaw"
-        )
-        .splitlines()
-    )
+    data_paths = _table_data_paths(context, node, db, table)
     container = get_container(context, node)
 
     for part_name, archived_files in archives.items():
@@ -306,6 +299,42 @@ def step_detached_archives_match_source(context, db, table, disk, node, backup_i
             )
             assert source.exit_code == 0, source.output.decode(errors="replace")
             assert_that(archived_data, equal_to(source.output))
+
+
+@then(
+    'detached part "{target_part}" of "{db:w}"."{table:w}" on {target:w} '
+    'matches "{source_part}" on {source:w}'
+)
+# pylint: disable=too-many-arguments,too-many-positional-arguments
+def step_detached_parts_match(
+    context, target_part, db, table, target, source_part, source
+):
+    """Compare the relative filenames and contents of detached parts on two nodes."""
+    manifests = []
+    for node, part in [(source, source_part), (target, target_part)]:
+        container = get_container(context, node)
+        data_paths = _table_data_paths(context, node, db, table)
+        path = _find_detached_source_path(container, data_paths, part)
+        result = container.exec_run(
+            ["find", ".", "-type", "f", "-exec", "sha256sum", "{}", "+"],
+            user="root",
+            workdir=path,
+        )
+        assert result.exit_code == 0, result.output.decode(errors="replace")
+        manifests.append(sorted(result.output.splitlines()))
+    assert manifests[0], "The source detached part has no files"
+    assert_that(manifests[1], equal_to(manifests[0]))
+
+
+def _table_data_paths(context, node, db, table):
+    return (
+        ClickhouseClient(context, node)
+        .get_response(
+            f"SELECT arrayJoin(data_paths) FROM system.tables "
+            f"WHERE database = '{db}' AND name = '{table}' FORMAT TSVRaw"
+        )
+        .splitlines()
+    )
 
 
 def _find_detached_source_path(container, data_paths, part_name):

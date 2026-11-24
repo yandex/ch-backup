@@ -17,6 +17,10 @@ from ch_backup import logging
 from ch_backup.backup.metadata import DetachedPartMetadata, TableMetadata
 from ch_backup.backup.metadata.table_metadata import split_part_name
 from ch_backup.backup.restore_context import RestoreContext
+from ch_backup.backup.restore_workspace import (
+    LOCAL_RESTORE_DIR,
+    is_local_restore_workspace,
+)
 from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.clickhouse.models import (
@@ -33,7 +37,6 @@ from ch_backup.exceptions import ClickhouseBackupError, ConfigurationError
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.util import (
     CLOUD_STORAGE_EXCLUDE_FILE_NAMES,
-    LOCAL_RESTORE_DIR,
     chown_dir_contents,
     chown_file,
     escape,
@@ -1418,23 +1421,23 @@ class ClickhouseCTL:
 
             for entry in entries:
                 try:
-                    if entry.name == LOCAL_RESTORE_DIR or not entry.is_dir(
-                        follow_symlinks=False
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+
+                    part_path = Path(entry.path)
+                    reason = _get_detached_part_reason(entry.name)
+                    if (reason_filter and reason not in reason_filter) or (
+                        is_local_restore_workspace(part_path)
                     ):
                         continue
 
-                    reason = _get_detached_part_reason(entry.name)
-                    if reason_filter and reason not in reason_filter:
-                        continue
-
-                    rel_paths = list(scan_dir_files(Path(entry.path)))
-                    checksum = _get_detached_part_checksum(entry.path, rel_paths, disk)
+                    rel_paths = list(scan_dir_files(part_path))
 
                     # Detached object-storage parts contain local metadata files.
                     # Those files are what the backup archives, so their aligned
                     # size (not the size of referenced bucket objects) is recorded.
                     size = calc_aligned_files_size(
-                        [Path(entry.path) / file for file in rel_paths],
+                        [part_path / file for file in rel_paths],
                         alignment=BLOCKSIZE,
                     )
 
@@ -1445,7 +1448,9 @@ class ClickhouseCTL:
                         reason=reason,
                         disk_name=disk_name,
                         path=entry.path,
-                        checksum=checksum,
+                        checksum=_get_detached_part_checksum(
+                            entry.path, rel_paths, disk
+                        ),
                         size=size,
                         files=rel_paths,
                         object_storage=disk.type == "s3",
