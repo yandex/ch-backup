@@ -80,10 +80,10 @@ def step_prepend_object_references(context, node, backup_name):
     layout = BackupStorage(context, node).layout
     backup = layout.get_backup(backup_name)
     assert backup is not None
-    path = layout.get_cloud_storage_metadata_remote_paths(
+    path = layout.list_cloud_storage_metadata_archives(
         backup_name, conf["disk"], backup.cloud_storage.compressed, "all"
     )[0]
-    files = layout.get_cloud_storage_metadata_files(backup, path)
+    files = layout.read_cloud_storage_metadata_archive(backup, path)
     saved = getattr(context, "saved_cloud_metadata", {})
     assert (node, backup_name, path) not in saved, f"Metadata already saved: {path}"
     saved[node, backup_name, path] = files.copy()
@@ -125,7 +125,7 @@ def step_restore_cloud_metadata(context):
         assert backup is not None
         layout.upload_cloud_storage_metadata_files(backup, path, files)
         layout.wait()
-        assert layout.get_cloud_storage_metadata_files(backup, path) == files
+        assert layout.read_cloud_storage_metadata_archive(backup, path) == files
     context.saved_cloud_metadata = {}
 
 

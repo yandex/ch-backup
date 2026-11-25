@@ -1003,6 +1003,12 @@ def adopt_cloud_storage_command(
     default=False,
     help="Do nothing if backup does not exist",
 )
+@option(
+    "--delete-cloud-storage-data",
+    is_flag=True,
+    default=False,
+    help="Also delete external cloud storage data owned by copied backups.",
+)
 def delete_command(
     _ctx: Context,
     ch_backup: ClickhouseBackup,
@@ -1011,15 +1017,23 @@ def delete_command(
     force: bool,
     *,
     delete_unreadable: bool = False,
+    delete_cloud_storage_data: bool = False,
 ) -> None:
     """Delete particular backup."""
     try:
         if delete_unreadable:
             deleted_backup_name, msg = ch_backup.delete(
-                name, purge_partial, delete_unreadable=True
+                name,
+                purge_partial=purge_partial,
+                delete_cloud_storage_data=delete_cloud_storage_data,
+                delete_unreadable=True,
             )
         else:
-            deleted_backup_name, msg = ch_backup.delete(name, purge_partial)
+            deleted_backup_name, msg = ch_backup.delete(
+                name,
+                purge_partial=purge_partial,
+                delete_cloud_storage_data=delete_cloud_storage_data,
+            )
     except BackupNotFound:
         if force:
             logging.info(
@@ -1294,18 +1308,30 @@ def check_command(
 
 @command(name="purge")
 @option(
+    "--delete-cloud-storage-data",
+    is_flag=True,
+    default=False,
+    help="Also delete external cloud storage data owned by copied backups.",
+)
+@option(
     "--delete-unreadable",
     is_flag=True,
     help="Devalue backups without readable metadata under retention; preserve referenced data.",
 )
 def purge_command(
-    _ctx: Context, ch_backup: ClickhouseBackup, delete_unreadable: bool = False
+    _ctx: Context,
+    ch_backup: ClickhouseBackup,
+    delete_unreadable: bool = False,
+    delete_cloud_storage_data: bool = False,
 ) -> None:
     """Purge outdated backups."""
     names, msg = (
-        ch_backup.purge(delete_unreadable=True)
+        ch_backup.purge(
+            delete_cloud_storage_data=delete_cloud_storage_data,
+            delete_unreadable=True,
+        )
         if delete_unreadable
-        else ch_backup.purge()
+        else ch_backup.purge(delete_cloud_storage_data=delete_cloud_storage_data)
     )
 
     if msg:

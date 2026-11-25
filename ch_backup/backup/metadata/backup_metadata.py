@@ -623,6 +623,22 @@ class BackupMetadata:
         if not part.link:
             self.real_size += part.size
 
+    def select_cloud_disks_for_cleanup(self) -> list[str]:
+        """Select disks that may contain cloud parts stored by this backup.
+
+        A disk containing only links has no parts to delete here. Include disks
+        absent from part metadata because their ownership cannot be determined.
+        """
+        parts = self.get_parts()
+        disks_with_stored_parts = {part.disk_name for part in parts if not part.link}
+        disks_with_linked_parts = {part.disk_name for part in parts if part.link}
+        return [
+            disk_name
+            for disk_name in self.cloud_storage.disks
+            if disk_name in disks_with_stored_parts
+            or disk_name not in disks_with_linked_parts
+        ]
+
     def unlink_part(self, part: PartMetadata) -> None:
         """
         Turn deduplicated data part into a regular one, i.e. stored within the backup itself.

@@ -10,7 +10,6 @@ from urllib.parse import urlparse
 
 from ch_backup.exceptions import ConfigurationError
 
-
 DEFAULT_S3_ENDPOINT = "https://s3.amazonaws.com"
 
 
@@ -70,6 +69,28 @@ def normalize_s3_endpoint(endpoint: str | None) -> str:
     return (endpoint or DEFAULT_S3_ENDPOINT).rstrip("/")
 
 
+def same_storage(first: dict, second: dict) -> bool:
+    """Compare buckets using the default S3 endpoint when none is configured."""
+    first_id = storage_id(first)
+    second_id = storage_id(second)
+    return (
+        first_id[0] == second_id[0]
+        and normalize_s3_endpoint(first_id[1]) == normalize_s3_endpoint(second_id[1])
+        and first_id[2] == second_id[2]
+    )
+
+
+def prefixes_overlap(first: str, second: str) -> bool:
+    """Check two slash-trimmed key prefixes at directory boundaries."""
+    return (
+        not first
+        or not second
+        or first == second
+        or first.startswith(f"{second}/")
+        or second.startswith(f"{first}/")
+    )
+
+
 def server_side_copy_possible(src_storage: dict, dst_storage: dict) -> bool:
     """
     Return True if objects can be copied between the storages on the server side,
@@ -88,7 +109,7 @@ def server_side_copy_possible(src_storage: dict, dst_storage: dict) -> bool:
 
 def make_storage_config(
     base: dict,
-    endpoint_url: str,
+    endpoint_url: str | None,
     bucket: str,
     access_key_id: str | None,
     secret_access_key: str | None,

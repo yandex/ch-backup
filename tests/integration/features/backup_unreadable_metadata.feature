@@ -78,6 +78,10 @@ Feature: Backups with unreadable metadata
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf --config-parameter backup.retain_count 0 purge
     """
     Then command exits with code 1
+    And we get response contains
+    """
+    Cannot collect references: unreadable metadata of old_backup
+    """
     When we try to execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf delete old_backup

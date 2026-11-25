@@ -57,13 +57,13 @@ class BackupStorage:
             assert backup_name and disk, "A cloud source needs a backup and a disk"
             backup = self.layout.get_backup(backup_name)
             assert backup is not None
-            paths = self.layout.get_cloud_storage_metadata_remote_paths(
+            paths = self.layout.list_cloud_storage_metadata_archives(
                 backup.name, disk, backup.cloud_storage.compressed, "all"
             )
             metadata = [
                 parse_object_storage_metadata(data)
                 for remote_path in paths
-                for _, data in self.layout.get_cloud_storage_metadata_files(
+                for _, data in self.layout.read_cloud_storage_metadata_archive(
                     backup, remote_path
                 )
             ]

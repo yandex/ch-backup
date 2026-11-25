@@ -315,7 +315,7 @@ def test_cloud_metadata_legacy_list_api() -> None:
         Path(local).write_bytes(Path(original.path()).read_bytes())
 
     get_loader(layout).download_file.side_effect = download
-    files = layout.get_cloud_storage_metadata_files(make_backup(), "disks/table.tar")
+    files = layout.read_cloud_storage_metadata_archive(make_backup(), "disks/table.tar")
     assert isinstance(files, list)
     assert files == [("part/data.bin", b"data")]
     assert files[0] == ("part/data.bin", b"data")
@@ -343,7 +343,7 @@ def test_restore_decryption_planning_skips_empty_metadata_members() -> None:
         patch("ch_backup.backup.cloud_storage_decryption.StorageLoader"),
         patch.object(
             layout,
-            "get_cloud_storage_metadata_remote_paths",
+            "list_cloud_storage_metadata_archives",
             return_value=["table.tar"],
         ),
         patch.object(CloudStorageDecryption, "_cleanup_prefix"),

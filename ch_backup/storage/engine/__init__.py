@@ -5,10 +5,13 @@ storage (S3, filesystem, etc.) in uniform way.
 It's currently supported only S3 storage engine.
 """
 
+from collections.abc import Iterable, Iterator
+
 from ch_backup.exceptions import ConfigurationError
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
 from ch_backup.storage.engine.s3 import S3StorageEngine
 from ch_backup.storage.engine.s3.s3_client_factory import get_cached_s3_client_factory
+from ch_backup.util import chunked
 
 SUPPORTED_STORAGES = {
     "s3": S3StorageEngine,
@@ -30,3 +33,12 @@ def get_storage_engine(config: dict) -> PipeLineCompatibleStorageEngine:
         )
     except KeyError:
         raise ConfigurationError(f'Unknown storage "{engine_id}"')
+
+
+def delete_key_batches(
+    engine: PipeLineCompatibleStorageEngine, keys: Iterable[str], batch_size: int
+) -> Iterator[int]:
+    """Delete exact keys, yielding the acknowledged count after each successful batch."""
+    for batch in chunked(keys, batch_size):
+        engine.delete_files(batch)
+        yield len(batch)

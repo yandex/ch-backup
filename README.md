@@ -445,12 +445,13 @@ Behavior and limitations:
   the scope becomes `failed`; the next run of the scope copies only unconfirmed objects. The list is
   rewritten by each run of the scope in which objects fail and removed once the scope completes.
   Disk metadata that cannot be planned is not copied, so it never overwrites rewritten disk
-  metadata; a later run copies it. Copy scopes of one backup one after another: the local lock
-  serializes runs on one host, runs on different hosts require `lock.zk_flock`.
+  metadata; a later run copies it. Run copy scopes of one backup sequentially. Matching local file
+  locks serialize runs on one host; runs on different hosts require matching ZooKeeper locks.
 - Copy acquires the configured source and target locks through completion, including retries and
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
   Locking remains optional for ordinary operations; local file locks are exclusive.
+  Without this coordination, do not run copy concurrently with delete or purge on the same storage.
 - Set `multiprocessing.metadata_read_threads` in the target configuration to control parallel
   source and target light-metadata reads at copy startup (default: `4`, positive integer).
   Each batch holds at most this many reads; set `1` for sequential reading.
@@ -537,9 +538,27 @@ Behavior and limitations:
   For version-5 metadata containing full object keys, a source path override replaces the original
   prefix from stored source metadata or disk configuration. Copy fails before writing if that prefix
   is unknown or a key is outside it. Without a path override, full keys are read as stored.
-  Restore of the copy uses the copied objects by default; they must be accessible with credentials of the
-  object storage disk of the host where the backup is restored. Note that these objects are not removed
-  when the copy is deleted, and they're stored for each copied backup separately.
+  Restore of the copy uses the copied objects by default. They need credentials from the
+  object storage disk of the host where the backup is restored.
+  Deleting metadata alone leaves external copied data behind. Deleting an entire prefix could remove
+  another cluster's objects. If another backup links to any cloud part, `delete` and `purge` keep the
+  owner's cloud objects, disk metadata archives, and frozen source data. After the last cloud link
+  disappears, cleanup can delete the exact external object keys recorded in those archives.
+  Add `--delete-cloud-storage-data` to request this cleanup. The default retains external objects,
+  preserving the existing deletion behavior. Original source data is preserved.
+  External cleanup requires readable backup metadata. An unreadable or pending-deletion target
+  stops the batch before changes, even with `--delete-unreadable`. Recover those targets separately
+  before requesting external cleanup.
+  Copies can record different destinations. Reading those destinations from metadata lets one purge
+  clean them without configuring each location again. This gives metadata writers deletion authority
+  within the credentials' permissions, so those writers must be trusted. Cleanup uses backup-storage
+  credentials by default. Configure `copy.cloud_storage.target` for separate credentials or another endpoint.
+  Encrypted disk metadata needs its original key because its object references determine which keys are safe to delete.
+  An invalid later backup should not cause earlier deletions, so cleanup validates the whole batch before mutation.
+  Storage failures can still leave partial progress. Cleanup retains object references and archives until they
+  are no longer needed for retry. Retry after correcting the failure.
+  A concurrent copy could add references after cleanup checks them. Use matching ZooKeeper locks or external
+  serialization to prevent that race. Local file locks coordinate only processes on the same host.
   A recorded endpoint could direct configured credentials to another service. Restore therefore accepts it
   only when its origin matches a configured disk or backup-storage endpoint, or an explicit
   `--cloud-storage-source-endpoint` override. A null endpoint selects the AWS default.

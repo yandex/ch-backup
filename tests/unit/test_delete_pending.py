@@ -614,7 +614,7 @@ def test_cloud_deletion_requires_ownership_before_touching_payload(
         if whole:
             layout.delete_backup(name, unfreeze)
         else:
-            layout.delete_cloud_storage_data(name)
+            layout.delete_backup_cloud_files(name)
     assert objects == before
     storage.delete_files.assert_not_called()
     unfreeze.assert_not_called()

@@ -13,7 +13,10 @@ import pytest
 from click import Group
 from click.testing import CliRunner
 
-from ch_backup.backup.layout import BackupLayout, read_metadata_in_batches
+from ch_backup.backup.layout import (
+    BackupLayout,
+    read_metadata_in_batches,
+)
 from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
@@ -266,7 +269,10 @@ def test_list_collects_read_errors_only_when_requested(operation):
     good = BackupMetadata("good", "2", "26.6", "%Y-%m-%d")
     error = S3RetryingError("\n\nInternalError\nTraceback details")
 
+    checked_paths = []
+
     def path_exists(path):
+        checked_paths.append(path)
         if path.endswith("delete_pending.json"):
             return False
         if "/broken/" in path and operation == "head":
@@ -286,6 +292,13 @@ def test_list_collects_read_errors_only_when_requested(operation):
     unreadable: dict[str, str] = {}
     assert [b.name for b in layout.get_backups(True, unreadable=unreadable)] == ["good"]
     assert unreadable == {"broken": "S3RetryingError: InternalError"}
+
+    checked_paths.clear()
+    assert [
+        b.name
+        for b in layout.get_backups(True, excluded_backup_names=frozenset({"broken"}))
+    ] == ["good"]
+    assert all("/broken/" not in path for path in checked_paths)
 
 
 def test_list_failure_is_not_treated_as_unreadable_metadata():
@@ -361,7 +374,7 @@ class TestCloudStorageMetadataRemotePaths:
             f"{backup_path}/disks/{source_disk_name}/db2/table4.tar",
         ]
 
-        remote_paths = layout.get_cloud_storage_metadata_remote_paths(
+        remote_paths = layout.list_cloud_storage_metadata_archives(
             backup_name,
             source_disk_name,
             compression=False,
@@ -588,7 +601,7 @@ class TestCloudStorageDataDeletion:
         """
         layout, delete_files = self._make_layout()
 
-        layout.delete_cloud_storage_data("my-backup")
+        layout.delete_backup_cloud_files("my-backup")
 
         assert delete_files.call_args.args[0] == [
             "ch_backup/my_backup/disks/object",

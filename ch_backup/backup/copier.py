@@ -88,6 +88,8 @@ from ch_backup.storage.object_copy import (
     normalize_s3_endpoint,
     parse_server_side_copy_mode,
     server_side_copy_possible,
+    prefixes_overlap,
+    same_storage,
     storage_id,
 )
 from ch_backup.storage.temporary_disk_index import TemporaryDiskIndex
@@ -280,15 +282,36 @@ class BackupCopier:
                         f"Backup with name {backup.name} conflicts with backup {existing} "
                         "in target storage: their sanitized names are equal"
                     )
-                if (
-                    backup.cloud_storage.requires_source_bucket
-                    and CopyScope.CLOUD_STORAGE in self._scopes
-                ):
-                    self._get_target_cloud_storage()
+                try:
+                    self._validate_cloud_destination(backup)
+                except ConfigurationError:
+                    # A completed target needs no external destination for this invocation.
+                    existing_target = self._target_layout.get_backup(backup.name)
+                    if (
+                        existing_target is None
+                        or existing_target.state != BackupState.CREATED
+                    ):
+                        raise
             except Exception as e:
                 results[backup.name].add_error(e, "validation")
                 if not self._keep_going or is_broken_executor(e):
                     raise
+
+    def _validate_cloud_destination(self, backup: BackupMetadata) -> None:
+        """Check that backup deletion cannot reach the external copy destination."""
+        if (
+            backup.cloud_storage.requires_source_bucket
+            and CopyScope.CLOUD_STORAGE in self._scopes
+        ):
+            storage, prefix = self._get_target_cloud_storage()
+            backup_root = _key(self._target_config["backup"]["path_root"]).rstrip("/")
+            if same_storage(storage, self._target_storage) and prefixes_overlap(
+                prefix, backup_root
+            ):
+                raise ConfigurationError(
+                    "External cloud storage path must not overlap backup.path_root "
+                    "in the target backup bucket"
+                )
 
     def _get_target_backup_names(
         self, results: dict[str, BackupCopyResult]
@@ -1390,7 +1413,7 @@ class BackupCopier:
                     found = set()
                     for (
                         remote_path
-                    ) in self._layout.get_cloud_storage_metadata_remote_paths(
+                    ) in self._layout.list_cloud_storage_metadata_archives(
                         source.get_sanitized_name(),
                         disk_name,
                         source.cloud_storage.compressed,
@@ -1546,7 +1569,7 @@ class BackupCopier:
                 src_storage, src_prefix, src_path_override = (
                     self._get_source_cloud_storage(backup, disk_name)
                 )
-                for remote_path in layout.get_cloud_storage_metadata_remote_paths(
+                for remote_path in layout.list_cloud_storage_metadata_archives(
                     name, disk_name, backup.cloud_storage.compressed, "all"
                 ):
                     with self._planning_step(result, remote_path):

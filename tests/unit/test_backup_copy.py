@@ -249,11 +249,17 @@ class FakeLayout:
                     layout.metadata_files()[entry.src_path]
                 )
 
-    def get_cloud_storage_metadata_remote_paths(
+    def list_cloud_storage_metadata_archives(
         self, backup_name, disk_name, compression, desired_tables
     ):
-        prefix = os.path.join(self.get_backup_path(backup_name), "disks", disk_name)
-        return sorted(p for p in self.metadata_files() if p.startswith(prefix))
+        metadata_directory = os.path.join(
+            self.get_backup_path(backup_name), "disks", disk_name
+        )
+        return sorted(
+            archive_path
+            for archive_path in self.metadata_files()
+            if archive_path.startswith(metadata_directory)
+        )
 
     def download_cloud_storage_metadata_archive(self, backup_meta, remote_path):
         return spool_metadata(self.metadata_files()[remote_path])
@@ -1492,6 +1498,40 @@ def test_rewritten_metadata_must_stay_in_target_backup() -> None:
         ctx.copy(["b1"])
     assert not ctx.target_layout.uploaded
     assert not ctx.target_layout.cloud_storage_files
+
+
+@pytest.mark.parametrize(
+    "backup_root,payload_root",
+    [
+        ("backups/", "/backups"),
+        ("backups", "backups/cloud"),
+        ("backups/metadata", "backups"),
+        ("backups", ""),
+        ("", "cloud"),
+    ],
+)
+def test_copy_rejects_overlapping_external_cloud_destination(backup_root, payload_root):
+    ctx = _cloud_storage_context()
+    ctx.target_config["backup"]["path_root"] = ctx.target_layout.path_root = backup_root
+    ctx.target_config["copy"]["cloud_storage"]["target"].update(
+        bucket=DST_BUCKET, endpoint_url=ENDPOINT + "/", path=payload_root
+    )
+    with pytest.raises(ConfigurationError, match="overlap"):
+        ctx.copy(["b1"])
+    assert not ctx.dst_objects
+    assert not ctx.target_layout.uploaded
+    assert not ctx.target_layout.copied
+
+
+@pytest.mark.parametrize(
+    "bucket,path", [(DST_BUCKET, "ch_backup_copy2"), ("disk-copy", "ch_backup_copy")]
+)
+def test_copy_accepts_separate_external_cloud_destination(bucket, path):
+    ctx = _cloud_storage_context()
+    ctx.target_config["copy"]["cloud_storage"]["target"].update(
+        bucket=bucket, path=path
+    )
+    assert ctx.copy(["b1"]) == (["b1"], [])
 
 
 def test_cloud_storage_without_target_bucket() -> None:
@@ -3227,30 +3267,6 @@ def test_files_scope_lists_failed_objects() -> None:
     assert _failed_objects(ctx) is None
 
 
-def test_failed_objects_copied_by_interrupted_run_are_not_listed() -> None:
-    ctx = _scoped_context()
-    ctx.target_layout.object_errors["data/xyz/bbb"] = StorageError("SlowDown")
-    with pytest.raises(ClickhouseBackupError):
-        ctx.copy(["b1"], keep_going=True)
-    failed = {
-        key: data
-        for key, data in ctx.store.data.items()
-        if key[1].endswith("/failed/cloud_storage.jsonl.gz")
-    }
-    target = ctx.target_layout.backups["b1"]
-    ctx.target_layout.object_errors.clear()
-    ctx.copy(["b1"], scopes=["cloud_storage"])
-    ctx.store.data.update(failed)
-    ctx.target_layout.backups["b1"] = target
-    ctx.target_layout.copied.clear()
-
-    ctx.copy(["b1"], scopes=["cloud_storage"])
-
-    assert not ctx.target_layout.copied
-    assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
-    assert _failed_objects(ctx) is None
-
-
 def test_completed_scope_with_deleted_objects_is_copied_again() -> None:
     ctx = _scoped_context()
     path = "ch_backup_copy/b1/metadata/a.tar"
@@ -3772,3 +3788,27 @@ def test_pending_backups_do_not_block_independent_copy(pending_side):
     layout.pending.add("retired")
     assert ctx.copy() == (["good"], [])
     assert "retired" not in ctx.target_layout.backups
+
+
+def test_failed_objects_copied_by_interrupted_run_are_not_listed() -> None:
+    ctx = _scoped_context()
+    ctx.target_layout.object_errors["data/xyz/bbb"] = StorageError("SlowDown")
+    with pytest.raises(ClickhouseBackupError):
+        ctx.copy(["b1"], keep_going=True)
+    failed = {
+        key: data
+        for key, data in ctx.store.data.items()
+        if key[1].endswith("/failed/cloud_storage.jsonl.gz")
+    }
+    target = ctx.target_layout.backups["b1"]
+    ctx.target_layout.object_errors.clear()
+    ctx.copy(["b1"], scopes=["cloud_storage"])
+    ctx.store.data.update(failed)
+    ctx.target_layout.backups["b1"] = target
+    ctx.target_layout.copied.clear()
+
+    ctx.copy(["b1"], scopes=["cloud_storage"])
+
+    assert not ctx.target_layout.copied
+    assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
+    assert _failed_objects(ctx) is None
