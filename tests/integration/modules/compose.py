@@ -7,6 +7,8 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
+import time
 
 import yaml
 
@@ -14,6 +16,9 @@ from . import docker, utils
 from .typing import ContextT
 
 COMPOSE_UP_DOWN_TIMEOUT = 30
+COMPOSE_DOWN_RETRIES = 3
+COMPOSE_DOWN_RETRY_DELAY = 2
+MISSING_EXIT_EVENT = "tried to kill container, but did not receive an exit event"
 
 
 @utils.env_stage("create", fail=True)
@@ -61,11 +66,28 @@ def shutdown_containers(context: ContextT) -> None:
         # Even a failed kill must be followed by removal. Starting the next
         # scenario with surviving containers would reuse its predecessor's data.
         logging.exception("Container kill failed; attempting Compose down")
-    _call_compose(
-        context.conf,
-        project_name=project_name,
-        command=f"down --volumes --remove-orphans --timeout {COMPOSE_UP_DOWN_TIMEOUT}",
-    )
+    command = f"down --volumes --remove-orphans --timeout {COMPOSE_UP_DOWN_TIMEOUT}"
+    for attempt in range(COMPOSE_DOWN_RETRIES + 1):
+        try:
+            _call_compose(
+                context.conf,
+                project_name=project_name,
+                command=command,
+                capture_stderr=True,
+            )
+        except subprocess.CalledProcessError as error:
+            if attempt == COMPOSE_DOWN_RETRIES or MISSING_EXIT_EVENT not in (
+                error.stderr or ""
+            ):
+                raise
+            logging.warning(
+                "Docker did not confirm container exit; retrying Compose down (%d/%d)",
+                attempt + 1,
+                COMPOSE_DOWN_RETRIES,
+            )
+            time.sleep(COMPOSE_DOWN_RETRY_DELAY)
+        else:
+            break
     remaining = docker.get_containers(context)
     if remaining:
         raise RuntimeError(
@@ -211,7 +233,9 @@ def _validate_config(context: ContextT) -> None:
     _call_compose(context.conf, command="config")
 
 
-def _call_compose(conf: dict, *, command: str, project_name: str = None) -> None:
+def _call_compose(
+    conf: dict, *, command: str, project_name: str = None, capture_stderr: bool = False
+) -> None:
     """
     Execute Docker Compose command.
     """
@@ -225,7 +249,18 @@ def _call_compose(conf: dict, *, command: str, project_name: str = None) -> None
     shell_command += shlex.split(command)
 
     # Note: build paths are resolved relative to config file location.
-    subprocess.check_call(shell_command)
+    if capture_stderr:
+        result = subprocess.run(
+            shell_command,
+            check=False,
+            stderr=subprocess.PIPE,
+            encoding="utf-8",
+            errors="replace",
+        )
+        print(result.stderr, end="", file=sys.stderr, flush=True)
+        result.check_returncode()
+    else:
+        subprocess.check_call(shell_command)
 
 
 def _config_path(config: dict) -> str:
