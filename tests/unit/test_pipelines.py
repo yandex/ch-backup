@@ -3,6 +3,7 @@ import io
 import tarfile
 import threading
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -17,14 +18,18 @@ from ch_backup.storage import StorageLoader
 from ch_backup.storage.async_pipeline.pipeline_builder import PipelineBuilder
 from ch_backup.storage.async_pipeline.pipelines import (
     download_data_pipeline,
+    download_data_tarball_pipeline,
     run,
     run_and_collect_all,
     run_and_return_first,
+    upload_data_tarball_pipeline,
+    upload_file_pipeline,
 )
 from ch_backup.storage.async_pipeline.stages.filesystem.write_files_stage import (
     UnpackTarballStage,
     WriteFilesStage,
 )
+from ch_backup.storage.metadata_archive import spool_metadata
 
 
 @pytest.mark.parametrize("size", [0, 1, 63, 64, 65, 128, 129])
@@ -293,3 +298,48 @@ def test_tar_rejects_incomplete_long_name(tmp_path):
     stage(header.tobuf(format=tarfile.GNU_FORMAT)[:530], 0)
     with pytest.raises(ValueError, match="Truncated TAR"):
         stage.on_done()
+
+
+@pytest.mark.parametrize("compress", [False, True])
+@pytest.mark.parametrize("encrypt", [False, True])
+@pytest.mark.parametrize(
+    "disk_backed,delete_after", [(False, False), (True, False), (True, True)]
+)
+def test_empty_cloud_metadata_archive_replaces_stored_contents(
+    compress, encrypt, disk_backed, delete_after
+):
+    """Cleanup must persist an empty archive, or a retry reads stale object keys."""
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["encryption"]["key"] = "a" * 32
+    objects = {}
+    storage = MagicMock()
+    storage.upload_data.side_effect = lambda data, path: objects.update({path: data})
+
+    def upload(files):
+        if disk_backed:
+            archive = spool_metadata(files)
+            path = Path(archive.path())
+            upload_file_pipeline(
+                config, path, "archive", encrypt, delete_after, compress
+            )
+            assert path.exists() is not delete_after
+        else:
+            upload_data_tarball_pipeline(
+                config,
+                [name for name, _ in files],
+                [data for _, data in files],
+                "archive",
+                encrypt,
+                compress,
+            )
+
+    with patch(
+        "ch_backup.storage.async_pipeline.pipeline_builder.get_storage_engine",
+        return_value=storage,
+    ):
+        upload([("data.bin", b"old metadata")])
+        original = objects["archive"]
+        upload([])
+        assert objects["archive"] != original
+        storage.download_part.side_effect = [objects["archive"], b""]
+        assert not download_data_tarball_pipeline(config, "archive", encrypt, compress)
