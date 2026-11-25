@@ -19,13 +19,13 @@ from ch_backup import logging
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import ConfigurationError
 from ch_backup.storage.engine.s3.s3_config import build_botocore_config
-from ch_backup.storage.object_copy import aws_config_revision, read_aws_config
+from ch_backup.storage.object_copy import aws_config_revision, checked_aws_config_file
 from ch_backup.type_hints.boto3.s3 import S3Client
 
 _MAX_CACHED_FACTORIES = 16
 
 # ProcessExecPool uses spawn, so each worker owns its sessions and connections.
-_FACTORIES: list[tuple[dict, tuple | None, "S3ClientCachedFactory"]] = []
+_FACTORIES: list[tuple[dict, "S3ClientCachedFactory"]] = []
 _FACTORIES_LOCK = threading.Lock()
 
 
@@ -78,33 +78,20 @@ class S3ClientFactory:
     def __init__(self, config: dict):
         """Create a boto session for this storage's credentials."""
         credentials_config = config["credentials"]
-        self._config = config
+        self._config = config.copy()
         self._botocore_config = build_botocore_config(config)
-        session_options: dict[str, Any] = {}
-        self._aws_config_revision = aws_config_revision(config)
-        if self._aws_config_revision is not None:
-            read_aws_config(config)
-            session = botocore.session.get_session()
-            session.set_config_variable("config_file", self._aws_config_revision[0])
-            session.full_config  # pylint: disable=pointless-statement
-            self._check_aws_config_revision()
-            session_options["botocore_session"] = session
+        session = None
+        with checked_aws_config_file(self._config) as path:
+            if path:
+                session = botocore.session.get_session()
+                session.set_config_variable("config_file", path)
+                session.full_config  # pylint: disable=pointless-statement
         self._s3_session = boto3.session.Session(
             aws_access_key_id=credentials_config["access_key_id"],
             aws_secret_access_key=credentials_config["secret_access_key"],
             region_name=self._config["boto_config"]["region_name"],
-            **session_options,
+            botocore_session=session,
         )
-
-    def _check_aws_config_revision(self) -> None:
-        """Keep lazy SDK reads within the revision captured by this factory."""
-        if (
-            self._aws_config_revision is not None
-            and aws_config_revision(self._config) != self._aws_config_revision
-        ):
-            raise ConfigurationError(
-                "storage.credentials.aws_config_file changed during use"
-            )
 
     def _resolve_proxies(
         self, resolver_path: str | None, proxy_port: int
@@ -162,13 +149,13 @@ class S3ClientFactory:
                 )
             )
 
-        self._check_aws_config_revision()
+        aws_config_revision(self._config)
         client = self._s3_session.client(
             service_name="s3",
             endpoint_url=credentials_config["endpoint_url"],
             config=boto_config,
         )
-        self._check_aws_config_revision()
+        aws_config_revision(self._config)
         return client
 
 
@@ -223,19 +210,21 @@ def get_cached_s3_client_factory(config: dict) -> S3ClientCachedFactory:
     """Return the process-local factory shared by engines with an equal config."""
     client_ttl = _validate_client_ttl(config["client_ttl"])
     revision = aws_config_revision(config)
+    if revision != config.get("_aws_config_revision"):
+        config = {**config, "_aws_config_revision": revision}
     with _FACTORIES_LOCK:
-        for index, (cached_config, cached_revision, factory) in enumerate(_FACTORIES):
-            if config == cached_config and revision == cached_revision:
+        for index, (cached_config, factory) in enumerate(_FACTORIES):
+            if config == cached_config:
                 # Move this factory to the end to mark it as most recently used.
                 _FACTORIES.append(_FACTORIES.pop(index))
                 return factory
         # Keep the cache key and factory independent of caller mutations.
         snapshot = deepcopy(config)
         factory = S3ClientCachedFactory(
-            S3ClientFactory({**snapshot, "_aws_config_revision": revision}),
+            S3ClientFactory(snapshot),
             client_ttl=client_ttl,
         )
-        _FACTORIES.append((snapshot, revision, factory))
+        _FACTORIES.append((snapshot, factory))
         # Remove older entries from the front, keeping the most recently used ones.
         del _FACTORIES[:-_MAX_CACHED_FACTORIES]
         return factory

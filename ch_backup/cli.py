@@ -1175,13 +1175,13 @@ def copy_command(
         if not isinstance(target_cfg["copy"]["only_with_data"], bool):
             raise ConfigurationError("copy.only_with_data must be a boolean")
         copy_deduplication_cutoff(target_cfg["copy"], command_start)
-        if target_cfg["storage"]["type"] == "s3":
-            validate_aws_config(target_cfg["storage"])
         backup_names = None
         if name:
             if name == "LAST" and CopyScope.FILES in parse_copy_scopes(
                 target_cfg["copy"]["scopes"]
             ):
+                if target_cfg["storage"]["type"] == "s3":
+                    validate_aws_config(target_cfg["storage"])
                 source_config = resolve_copy_endpoint(ch_backup.config, target_cfg)
                 if source_config is not ch_backup.config:
                     ch_backup = ClickhouseBackup(source_config)

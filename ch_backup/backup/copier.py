@@ -154,17 +154,19 @@ class BackupCopier:
         Target table listings map (backup, database, table) to part, file and size,
         and are used to check links to incomplete copies.
         """
-        self._config = resolve_copy_endpoint(config, target_config)
-        self._target_config = resolve_copy_endpoint(target_config, config)
-        self._layout = layout if self._config is config else BackupLayout(self._config)
-        self._target_layout = (
-            target_layout
-            if self._target_config is target_config
-            else BackupLayout(self._target_config)
-        )
+        source = resolve_copy_endpoint(config, target_config)
+        target = resolve_copy_endpoint(target_config, config)
+        if source is not config:
+            config, layout = source, BackupLayout(source)
+        if target is not target_config:
+            target_config, target_layout = target, BackupLayout(target)
+        self._config = config
+        self._target_config = target_config
+        self._layout = layout
+        self._target_layout = target_layout
         self._ch_config = ch_config
-        self._storage: dict = self._config["storage"]
-        self._target_storage: dict = self._target_config["storage"]
+        self._storage: dict = config["storage"]
+        self._target_storage: dict = target_config["storage"]
         self._copy_config: dict = target_config["copy"]
         self._metadata_read_threads = target_config["multiprocessing"][
             "metadata_read_threads"
@@ -1692,19 +1694,17 @@ class BackupCopier:
         endpoint_url = conf.get("endpoint_url") or endpoint_url
         bucket = conf.get("bucket") or bucket
 
-        credentials: tuple[str | None, str | None] | None
         aws_config_file = None
         if conf.get("access_key_id"):
             credentials = (conf["access_key_id"], conf.get("secret_access_key"))
         else:
-            credentials = self._get_disk_credentials(disk_name)
-            if credentials is None:
-                source_credentials = self._storage["credentials"]
-                credentials = (
-                    source_credentials["access_key_id"],
-                    source_credentials["secret_access_key"],
-                )
-                aws_config_file = source_credentials.get("aws_config_file")
+            disk_keys = self._get_disk_credentials(disk_name)
+            if disk_keys is None:
+                aws_config_file = self._storage["credentials"].get("aws_config_file")
+            credentials = disk_keys or (
+                self._storage["credentials"]["access_key_id"],
+                self._storage["credentials"]["secret_access_key"],
+            )
 
         storage = make_storage_config(
             self._storage,

@@ -6,6 +6,8 @@ import copy
 import os
 import re
 import stat
+from collections.abc import Iterator
+from contextlib import contextmanager
 from enum import Enum
 from typing import Any, NamedTuple
 from urllib.parse import urlparse
@@ -83,16 +85,17 @@ def server_side_copy_possible(src_storage: dict, dst_storage: dict) -> bool:
     ):
         return False
 
-    src_file = aws_config_revision(src_storage)
-    dst_file = aws_config_revision(dst_storage)
-    if not src_file or not dst_file:
-        return not src_file and not dst_file
-    return read_aws_config(src_storage) == read_aws_config(dst_storage)
+    with (
+        checked_aws_config_file(src_storage.copy()) as source,
+        checked_aws_config_file(dst_storage.copy()) as target,
+    ):
+        if source is None or target is None:
+            return source == target
+        return load_config(source) == load_config(target)
 
 
-def aws_config_revision(storage: dict) -> tuple | None:
-    """Identify an explicit regular AWS file and check any pinned revision."""
-    credentials = storage["credentials"]
+def _aws_file_stat(credentials: dict) -> tuple | None:
+    """Identify the regular file configured for an explicit S3 endpoint."""
     path = credentials.get("aws_config_file")
     if path is None or path == "":
         return None
@@ -116,7 +119,7 @@ def aws_config_revision(storage: dict) -> tuple | None:
         raise ConfigurationError(
             f"storage.credentials.aws_config_file: cannot read AWS config ({type(error).__name__})"
         ) from None
-    revision = (
+    return (
         path,
         info.st_dev,
         info.st_ino,
@@ -124,6 +127,11 @@ def aws_config_revision(storage: dict) -> tuple | None:
         info.st_mtime_ns,
         info.st_ctime_ns,
     )
+
+
+def aws_config_revision(storage: dict) -> tuple | None:
+    """Reject changes to a pinned AWS config, including removal of the option."""
+    revision = _aws_file_stat(storage["credentials"])
     expected = storage.get("_aws_config_revision")
     if expected is not None and revision != expected:
         raise ConfigurationError(
@@ -132,36 +140,34 @@ def aws_config_revision(storage: dict) -> tuple | None:
     return revision
 
 
-def read_aws_config(storage: dict) -> dict:
-    """Read explicit AWS settings using the SDK's effective profile mapping."""
-    revision = aws_config_revision(storage)
+@contextmanager
+def checked_aws_config_file(
+    storage: dict, *, reload: bool = False
+) -> Iterator[str | None]:
+    """Check readability and pin the same AWS file revision across an SDK read."""
+    if storage["credentials"].get("aws_config_file") in (None, ""):
+        storage.pop("_aws_config_revision", None)
+        yield None
+        return
+    settings = {**storage, "_aws_config_revision": None} if reload else storage
+    revision = aws_config_revision(settings)
     assert revision is not None
     try:
         with open(revision[0], encoding="utf-8"):
-            pass
-        settings = load_config(revision[0])
+            yield revision[0]
     except (ConfigNotFound, ConfigParseError, OSError, ValueError) as error:
         raise ConfigurationError(
             f"storage.credentials.aws_config_file: cannot read AWS config ({type(error).__name__})"
         ) from None
-    if aws_config_revision(storage) != revision:
-        raise ConfigurationError(
-            "storage.credentials.aws_config_file changed during use"
-        )
-    return settings
+    aws_config_revision({**storage, "_aws_config_revision": revision})
+    storage["_aws_config_revision"] = revision
 
 
 def validate_aws_config(storage: dict, *, reload: bool = False) -> None:
-    """Validate an explicit AWS file and pin its revision for this configuration."""
-    settings = dict(storage)
-    if reload:
-        settings.pop("_aws_config_revision", None)
-    if revision := aws_config_revision(settings):
-        settings["_aws_config_revision"] = revision
-        read_aws_config(settings)
-        storage["_aws_config_revision"] = revision
-    else:
-        storage.pop("_aws_config_revision", None)
+    """Validate AWS settings before storage access, reusing the pinned revision."""
+    with checked_aws_config_file(storage, reload=reload) as path:
+        if path and (reload or storage.get("_aws_config_revision") is None):
+            load_config(path)
 
 
 def make_storage_config(
