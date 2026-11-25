@@ -90,6 +90,19 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         )
         return remote_path
 
+    def claim_object(self, remote_path: str, data: bytes) -> None:
+        """Create an immutable claim or verify that an earlier claim matches."""
+        key = remote_path.lstrip("/")
+        try:
+            self._s3_client.put_object(
+                Body=data, Bucket=self._s3_bucket_name, Key=key, IfNoneMatch="*"
+            )
+        except ClientError as error:
+            if error.response["ResponseMetadata"].get("HTTPStatusCode") != 412:
+                raise
+            if self.download_data(key) != data:
+                raise StorageError(f'Conflicting copy parameters for "{key}"') from None
+
     def download_file(self, remote_path: str, local_path: str) -> None:
         remote_path = remote_path.lstrip("/")
         self._s3_client.download_file(

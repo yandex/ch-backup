@@ -88,6 +88,18 @@ class FakeEngine:
         page = entries[:128]
         return page, page[-1][0] if len(entries) > 128 else None
 
+    def path_exists(self, path: str) -> bool:
+        """Look up a stored key."""
+        return path in self._objects
+
+    def claim_object(self, path: str, data: bytes) -> None:
+        """Match the conditional create semantics of S3."""
+        if self.path_exists(path):
+            if self.download_data(path) != data:
+                raise StorageError(f"Conflicting copy parameters for {path}")
+        else:
+            self.upload_data(data, path)
+
     def download_file(self, remote_path, local_path):
         """Save an object to the requested scratch file."""
         with open(local_path, "wb") as output:
@@ -217,7 +229,15 @@ class FakeLayout:
         self.uploaded.append((backup.name, backup.state))
         self.backups[backup.name] = copy.deepcopy(backup)
 
-    def copy_objects(self, entries, *, keep_going=False, callback=None, on_error=None):
+    def copy_objects(
+        self,
+        entries,
+        *,
+        keep_going=False,
+        callback=None,
+        on_error=None,
+        source_encryption=None,
+    ):
         for entry in entries:
             error = self.copy_error or self.object_errors.get(entry.src_path)
             if error:
@@ -3769,3 +3789,138 @@ def test_pending_backups_do_not_block_independent_copy(pending_side):
     layout.pending.add("retired")
     assert ctx.copy() == (["good"], [])
     assert "retired" not in ctx.target_layout.backups
+
+
+def test_export_rejects_missing_part_before_writing() -> None:
+    ctx = CopyTestContext([_backup("b1", parts={"all_1_1_0": _part()})])
+    ctx.target_config["copy"]["reencrypt"] = True
+    ctx.target_config["encryption"]["key"] = "b" * 32
+    _with_files(ctx, "b1", {"metadata/databases.tar": 100, "metadata/db1.tar": 100})
+
+    with pytest.raises(
+        ClickhouseBackupError, match=r'Missing backup file ".*/all_1_1_0.tar"'
+    ):
+        ctx.copy(["b1"])
+    assert ctx.dst_objects == {}
+    assert "b1" not in ctx.target_layout.backups
+
+
+def test_export_rejects_incomplete_cloud_archive_before_writing() -> None:
+    ctx = _cloud_storage_context()
+    ctx.layout.backups["b1"] = _backup(
+        "b1",
+        cloud_storage_disks=["s3"],
+        parts={"all_1_1_0": {**_part(), "disk_name": "s3"}},
+    )
+    ctx.target_config["copy"]["reencrypt"] = True
+    ctx.target_config["encryption"]["key"] = "b" * 32
+    _with_files(ctx, "b1", {"metadata/databases.tar": 100, "metadata/db1.tar": 100})
+    ctx.layout.cloud_storage_files["ch_backup/b1/disks/s3/db1/t1.tar.gz"] = [
+        ("data/db1/t1/all_1_1_0/data.bin", _object_storage_metadata(("xyz/aaa", 1000))),
+    ]
+
+    with pytest.raises(
+        ClickhouseBackupError, match="Missing cloud metadata.*all_1_1_0"
+    ):
+        ctx.copy(["b1"])
+    assert ctx.dst_objects == {}
+    assert _disk_objects(ctx) == set()
+
+
+def test_plain_copy_of_export_is_repeatable() -> None:
+    """An ordinary transfer preserves the format and records its own mode."""
+    backup = _backup("example")
+    backup.copy_reencrypted = True
+    backup.copy_encryption = {"version": 1, "target": {"key_id": "export-key"}}
+    ctx = CopyTestContext([backup])
+    _with_files(ctx, "example", {"metadata/db1.tar": 100})
+    assert ctx.copy(["example"]) == (["example"], [])
+    assert ctx.copy(["example"]) == ([], ["example"])
+    assert (
+        ctx.target_layout.backups["example"].copy_encryption == backup.copy_encryption
+    )
+
+
+def test_export_preserves_unclaimed_backup_objects() -> None:
+    """An unowned schema object must survive an export with the same name."""
+    ctx = CopyTestContext([_backup("b1")])
+    ctx.target_config["copy"]["reencrypt"] = True
+    ctx.target_config["encryption"]["key"] = "b" * 32
+    _with_files(ctx, "b1", {"metadata/databases.tar": 100, "metadata/db1.tar": 100})
+    ctx.dst_objects["ch_backup_copy/b1/metadata/db1.tar"] = 999
+    with pytest.raises(ClickhouseBackupError, match="already contains data"):
+        ctx.copy(["b1"])
+    assert ctx.dst_objects == {"ch_backup_copy/b1/metadata/db1.tar": 999}
+
+
+def test_export_can_change_an_occupied_cold_destination() -> None:
+    """A rejected cold prefix does not bind the next attempt to that prefix."""
+    ctx = _cloud_storage_context()
+    ctx.target_layout.store = ctx.store
+    ctx.target_config["copy"]["reencrypt"] = True
+    ctx.target_config["encryption"]["key"] = "b" * 32
+    _with_files(ctx, "b1", {"metadata/databases.tar": 100, "metadata/db1.tar": 100})
+    cold = ctx.store.bucket("disk-copy")
+    cold["copies/b1/unrelated"] = 8
+    with pytest.raises(ClickhouseBackupError, match="already contains data"):
+        ctx.copy(["b1"])
+    assert ctx.dst_objects == {}
+    ctx.target_config["copy"]["cloud_storage"]["target"]["path"] = "fresh"
+    assert ctx.copy(["b1"]) == (["b1"], [])
+    assert cold["copies/b1/unrelated"] == 8
+    assert "fresh/b1/xyz/aaa" in cold
+
+
+@pytest.mark.parametrize("first_export", [True, False])
+def test_only_one_mode_can_write_after_both_plan(first_export: bool) -> None:
+    """A competing copy planning against the same empty target loses the reservation."""
+    ctx = CopyTestContext([_backup("b1")])
+    _with_files(ctx, "b1", {"metadata/databases.tar": 100, "metadata/db1.tar": 100})
+    transfer = BackupCopier._transfer_backup  # pylint: disable=protected-access
+    modes = ctx.target_config["copy"]
+
+    def start_competitor(copier, *args, **kwargs):
+        modes["reencrypt"] = not first_export
+        ctx.target_config["encryption"]["key"] = "k" * 32 if first_export else "b" * 32
+        with patch.object(BackupCopier, "_transfer_backup", transfer):
+            with pytest.raises(StorageError, match="Conflicting copy parameters"):
+                ctx.copy(["b1"])
+        assert not ctx.target_layout.uploaded
+        return transfer(copier, *args, **kwargs)
+
+    modes["reencrypt"] = first_export
+    ctx.target_config["encryption"]["key"] = "b" * 32 if first_export else "k" * 32
+    with patch.object(BackupCopier, "_transfer_backup", start_competitor):
+        assert ctx.copy(["b1"]) == (["b1"], [])
+    assert ctx.target_layout.backups["b1"].copy_reencrypted is first_export
+
+
+@pytest.mark.parametrize("damage", ["manifest", "file", None])
+def test_staged_export_requires_verified_files(damage: str | None) -> None:
+    """Only an intact files stage can publish an export without the source key."""
+    ctx = _cloud_storage_context()
+    ctx.target_layout.store = ctx.store
+    ctx.target_config["copy"]["reencrypt"] = True
+    ctx.target_config["encryption"]["key"] = "b" * 32
+    _with_files(ctx, "b1", {"metadata/databases.tar": 100, "metadata/db1.tar": 100})
+    ctx.copy(["b1"], scopes=["files"])
+    ctx.config["encryption"]["key"] = None
+    engine = ctx.store.engine(ctx.target_config["storage"])
+    if damage == "manifest":
+        path = next(
+            path
+            for path in ctx.dst_objects
+            if path.endswith("/manifest/files.jsonl.gz")
+        )
+        engine.upload_data(b"", path)
+    if damage:
+        engine.delete_file("ch_backup_copy/b1/metadata/db1.tar")
+        error = ValueError if damage == "manifest" else ClickhouseBackupError
+        with pytest.raises(error, match="incomplete"):
+            ctx.copy(["b1"], scopes=["cloud_storage"])
+        assert ctx.target_layout.backups["b1"].state == BackupState.CREATING
+        assert not _disk_objects(ctx)
+    else:
+        ctx.copy(["b1"], scopes=["cloud_storage"])
+        assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
+        assert _disk_objects(ctx)

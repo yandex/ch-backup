@@ -7,6 +7,7 @@ ClickhouseBackup unit tests.
 from collections import defaultdict
 from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Callable, Sequence, cast
 from unittest.mock import MagicMock, Mock, patch
 
@@ -34,8 +35,10 @@ from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
 from ch_backup.clickhouse.models import Database
 from ch_backup.config import DEFAULT_CONFIG, Config
+from ch_backup.encryption import get_cloud_storage_data_encryption_metadata
 from ch_backup.exceptions import (
     ClickhouseBackupError,
+    ConfigurationError,
     InvalidBackupStruct,
     StorageError,
 )
@@ -80,7 +83,7 @@ def _restore_backup_with_cloud_storage(
     backup = ClickhouseBackup(DEFAULT_CONFIG)  # type: ignore[arg-type]
     backup.__dict__["_context"] = MagicMock()
 
-    backup_meta = MagicMock()
+    backup_meta = MagicMock(copy_encryption=None)
     backup_meta.cloud_storage = CloudStorageMetadata(
         data_copied=data_copied, disks=["s3"]
     )
@@ -159,7 +162,7 @@ def test_restore_checks_parts_backup(
     context.zk_config = {"hosts": zk_hosts}
     context.ch_config.config = {}
     backup.__dict__["_context"] = context
-    backup_meta = MagicMock()
+    backup_meta = MagicMock(copy_encryption=None)
     backup_meta.schema_only = parts_schema_only
     backup_meta.cloud_storage.data_encryption = None
     backup_meta.get_databases.return_value = []
@@ -1254,3 +1257,37 @@ def test_nothing_is_reported_when_all_data_is_backed_up() -> None:
     context.backup_meta.count_skipped_data_tables.return_value = (0, 0)
 
     assert backup._skipped_data_message() is None  # pylint: disable=protected-access
+
+
+@pytest.mark.parametrize("sources", [BackupSources(), BackupSources(data=False)])
+def test_wrong_export_key_fails_before_restore(
+    tmp_path: Path,
+    sources: BackupSources,
+) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text("", encoding="utf-8")
+    config = Config(str(path))
+    config["encryption"]["key"] = "a" * 32
+    backup = ClickhouseBackup(config)
+    target = get_cloud_storage_data_encryption_metadata(
+        {**config["encryption"], "key": "b" * 32}
+    )
+    metadata = MagicMock(copy_encryption={"version": 1, "target": target})
+    context = MagicMock()
+    context.backup_layout.export_is_published.return_value = True
+    backup.__dict__["_context"] = context
+    with (
+        patch.object(backup, "_get_backup", return_value=metadata),
+        patch.object(backup, "_restore") as restore,
+        pytest.raises(ConfigurationError, match="does not match the exported backup"),
+    ):
+        backup.restore(
+            sources,
+            "export",
+            [],
+            [],
+            skip_cloud_storage=True,
+        )
+
+    restore.assert_not_called()
+    context.locker.assert_not_called()

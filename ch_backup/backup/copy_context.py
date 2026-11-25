@@ -98,6 +98,8 @@ class CopyContext:
         data_encryption: dict | None = None,
         flush_size: int = 10000,
         flush_interval: float = 60,
+        *,
+        backup_encryption: dict | None = None,
     ) -> None:
         """Prepare a private journal for one source backup."""
         self._engine = engine
@@ -112,7 +114,9 @@ class CopyContext:
         self._flushed_size = 0
         self._buffer = PendingJournalRecords()
         self._recorded = CopyIndex()
+        self._files_manifest = backup.files_manifest
         self._data_encryption = data_encryption
+        self._backup_encryption = backup_encryption
 
     def has_records(self) -> bool:
         """Check that records of previous runs were read."""
@@ -161,7 +165,9 @@ class CopyContext:
     def is_recorded(self, entry: CopyEntry) -> bool:
         """Check that copying of the object was confirmed by a previous run."""
         return self._recorded.contains(
-            _digest(_record(entry, self._data_encryption)).hex()
+            _digest(
+                _record(entry, self._data_encryption, self._backup_encryption)
+            ).hex()
         )
 
     def is_archive_recorded(
@@ -178,7 +184,9 @@ class CopyContext:
 
     def record(self, entry: CopyEntry) -> None:
         """Remember the confirmed copy until the next flush."""
-        self._buffer.append(_record(entry, self._data_encryption).decode())
+        self._buffer.append(
+            _record(entry, self._data_encryption, self._backup_encryption).decode()
+        )
 
     def record_archive(
         self, storage: dict, path: str, files: MetadataFiles, size: int
@@ -197,15 +205,25 @@ class CopyContext:
         except Exception as e:
             logging.warning("Failed to save list of failed objects {}: {}", path, e)
 
-    def save_manifest(self, scope: CopyScope, entries: CopyEntries) -> None:
+    def save_manifest(self, scope: CopyScope, entries: CopyEntries) -> dict | None:
         """Stream the object manifest without credentials into a compressed file."""
+        digest = hashlib.sha256()
         with NamedTemporaryFile() as target:
             with gzip.open(target.name, "wb") as stream:
                 continuation = None
                 while True:
                     batch, continuation = entries.read_batch(continuation, limit=128)
                     for entry in batch:
-                        stream.write(_record(entry) + b"\n")
+                        record = (
+                            _record(
+                                entry, self._data_encryption, self._backup_encryption
+                            )
+                            if self._backup_encryption is not None
+                            else _record(entry)
+                        )
+                        if self._backup_encryption is not None:
+                            digest.update(record + b"\n")
+                        stream.write(record + b"\n")
                     if continuation is None:
                         break
             self._engine.upload_file(
@@ -213,9 +231,15 @@ class CopyContext:
                 os.path.join(self._path, MANIFEST_DIR, f"{scope.value}.jsonl.gz"),
             )
 
+        if self._backup_encryption is None:
+            return None
+        return {"count": len(entries), "sha256": digest.hexdigest()}
+
+    # pylint: disable=too-many-locals
     def load_manifest(self, scope: CopyScope) -> CopyEntries:
         """Import the saved manifest without keeping all locations in memory."""
         entries = CopyEntries()
+        digest = hashlib.sha256()
         storages: dict[tuple, dict] = {}
         with TemporaryDirectory() as directory:
             source = Path(directory) / "manifest.gz"
@@ -225,11 +249,45 @@ class CopyContext:
             )
             with gzip.open(source, "rb") as stream:
                 for line in _journal_lines(stream):
-                    src, src_path, dst, dst_path, size = json.loads(line)
+                    src, src_path, dst, dst_path, size, *transform = json.loads(line)
+                    if self._backup_encryption is not None:
+                        digest.update(line + b"\n")
+                        if (
+                            len(transform) != 1
+                            or transform[0][0] != self._backup_encryption
+                        ):
+                            raise ValueError(
+                                "Files manifest has incompatible encryption"
+                            )
+                        _, source_size, encrypt, decrypt, local_crypto = transform[0]
+                    else:
+                        source_size, encrypt, decrypt, local_crypto = (
+                            size,
+                            False,
+                            False,
+                            False,
+                        )
                     src, dst = (
                         storages.setdefault(tuple(i), _storage(i)) for i in (src, dst)
                     )
-                    entries.append(CopyEntry(src, dst, src_path, dst_path, size, size))
+                    entries.append(
+                        CopyEntry(
+                            src,
+                            dst,
+                            src_path,
+                            dst_path,
+                            source_size,
+                            size,
+                            encrypt=encrypt,
+                            decrypt=decrypt,
+                            backup_encryption=local_crypto,
+                        )
+                    )
+        if self._backup_encryption is not None and self._files_manifest != {
+            "count": len(entries),
+            "sha256": digest.hexdigest(),
+        }:
+            raise ValueError("Files manifest is incomplete or damaged")
         return entries
 
     def flush(self, force: bool = False) -> None:
@@ -296,7 +354,11 @@ def _storage(identity: list) -> dict:
     }
 
 
-def _record(entry: CopyEntry, data_encryption: dict | None = None) -> bytes:
+def _record(
+    entry: CopyEntry,
+    data_encryption: dict | None = None,
+    backup_encryption: dict | None = None,
+) -> bytes:
     """Serialize source and target locations and size of the object."""
     record = [
         storage_id(entry.src_storage),
@@ -305,7 +367,17 @@ def _record(entry: CopyEntry, data_encryption: dict | None = None) -> bytes:
         entry.dst_path,
         entry.dst_size,
     ]
-    if entry.encrypt and data_encryption is not None:
+    if backup_encryption is not None:
+        record.append(
+            [
+                backup_encryption,
+                entry.size,
+                entry.encrypt,
+                entry.decrypt,
+                entry.backup_encryption,
+            ]
+        )
+    elif entry.encrypt and data_encryption is not None:
         record.append(data_encryption)
     return json.dumps(record, sort_keys=True).encode()
 

@@ -6,7 +6,7 @@ import copy
 import re
 from enum import Enum
 from typing import Any, NamedTuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 from ch_backup.exceptions import ConfigurationError
 
@@ -52,6 +52,7 @@ class CopyEntry(NamedTuple):
     server_side: bool = False
     encrypt: bool = False
     decrypt: bool = False
+    backup_encryption: bool = False
 
 
 def storage_id(storage: dict) -> tuple:
@@ -60,6 +61,14 @@ def storage_id(storage: dict) -> tuple:
     """
     credentials = storage["credentials"]
     return storage["type"], credentials["endpoint_url"], credentials["bucket"]
+
+
+def physical_storage_id(storage: dict) -> tuple:
+    """Compare S3 endpoints without cosmetic URL differences."""
+    kind, endpoint, bucket = storage_id(storage)
+    url = urlsplit(endpoint or "")
+    port = url.port or {"http": 80, "https": 443}.get(url.scheme)
+    return kind, (url.hostname, port, url.path.rstrip("/")), bucket
 
 
 def server_side_copy_possible(src_storage: dict, dst_storage: dict) -> bool:

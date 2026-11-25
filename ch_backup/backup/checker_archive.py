@@ -5,9 +5,10 @@ from contextlib import closing
 from typing import Callable, NamedTuple
 
 from ch_backup.backup.layout import BackupLayout
-from ch_backup.backup.metadata import BackupMetadata
+from ch_backup.backup.metadata import BackupMetadata, TableMetadata
 from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageBackup
 from ch_backup.clickhouse.object_storage_metadata import FROZEN_METADATA_FNAME
+from ch_backup.util import escape_metadata_file_name
 
 
 class CloudFile(NamedTuple):
@@ -30,7 +31,20 @@ class LegacyDisk:
         self.failure: str | None = None
 
 
-def _part_member(name: str) -> tuple[str, str, str] | None:
+def cloud_table_paths(table: TableMetadata) -> set[str]:
+    """
+    Return possible paths of a table on disk, as ClickHouse lays them out.
+    """
+    paths = {
+        f"data/{escape_metadata_file_name(table.database)}/"
+        f"{escape_metadata_file_name(table.name)}"
+    }
+    if table.uuid:
+        paths.add(f"store/{table.uuid[:3]}/{table.uuid}")
+    return paths
+
+
+def cloud_part_member(name: str) -> tuple[str, str, str] | None:
     """Split a stored ClickHouse file path into table directory, part and filename."""
     path = name.split("/", 4)
     if len(path) != 5:
@@ -44,7 +58,7 @@ def files_of_parts(
     """Select files under the requested table directories and parts."""
     result: dict[str, dict[str, bytes]] = {}
     for name, data in files:
-        member = _part_member(name)
+        member = cloud_part_member(name)
         if member is None:
             continue
         table, part, filename = member
@@ -73,7 +87,7 @@ def read_legacy_files(
         while True:
             batch, continuation = archive.read_batch(continuation)
             for name, data in batch:
-                member = _part_member(name)
+                member = cloud_part_member(name)
                 if member is None:
                     continue
                 table, part, filename = member

@@ -82,7 +82,9 @@ def _entry(name: str, size: int = 1) -> CopyEntry:
 
 
 def _context(engine: MemoryEngine, **kwargs: Any) -> CopyContext:
-    return CopyContext(engine, "/backups/b1", _backup("b1"), **kwargs)  # type: ignore[arg-type]
+    backup = _backup("b1")
+    backup.files_manifest = kwargs.pop("files_manifest", None)
+    return CopyContext(engine, "/backups/b1", backup, **kwargs)  # type: ignore[arg-type]
 
 
 def test_records_are_read_by_next_run() -> None:
@@ -317,3 +319,32 @@ def test_failed_downloads_remove_private_directory() -> None:
             resumed.load_manifest(CopyScope.FILES)
     assert len(directories) == 2
     assert all(not directory.exists() for directory in directories)
+
+
+def test_export_files_manifest_preserves_transformation() -> None:
+    engine = MemoryEngine()
+    identity = {"version": 1, "target": {"key_id": "target"}}
+    context = _context(engine, backup_encryption=identity)
+    entry = _entry("disk-metadata", 10)._replace(
+        dst_size=50, encrypt=True, backup_encryption=True
+    )
+    summary = context.save_manifest(CopyScope.FILES, CopyEntries([entry]))
+    context.record(entry)
+    context.flush(force=True)
+
+    resumed = _context(engine, backup_encryption=identity, files_manifest=summary)
+    resumed.load()
+    entries, _ = resumed.load_manifest(CopyScope.FILES).read_batch()
+
+    assert entries == [entry]
+    assert resumed.is_recorded(entries[0])
+    other = _context(
+        engine, backup_encryption={"version": 1, "target": {"key_id": "other"}}
+    )
+    with pytest.raises(ValueError, match="incompatible encryption"):
+        other.load_manifest(CopyScope.FILES)
+
+    path = next(path for path in engine.objects if "/manifest/" in path)
+    engine.objects[path] = b""
+    with pytest.raises(ValueError, match="incomplete or damaged"):
+        resumed.load_manifest(CopyScope.FILES)

@@ -727,8 +727,8 @@ class BackupLayout:
         path = os.path.join(
             self.get_cloud_storage_path(backup_name), CLOUD_STORAGE_OWNER_FNAME
         ).lstrip("/")
-        self._storage_loader.upload_data(
-            json.dumps({"version": 1, "backup_name": backup_name}), remote_path=path
+        self._storage_loader.claim_object(
+            path, json.dumps({"version": 1, "backup_name": backup_name}).encode()
         )
 
     def get_cloud_storage_backup(self, backup_name: str) -> CloudStorageBackup | None:
@@ -866,6 +866,41 @@ class BackupLayout:
             raise StorageError(
                 f"Failed to derive light metadata for backup {backup_name}"
             ) from error
+
+    def export_is_published(self, backup: BackupMetadata) -> bool:
+        """Require agreement between the records written at export publication."""
+        light = self.get_backup(
+            backup.name, use_light_meta=True, fallback_to_full=False
+        )
+        if (
+            light is None
+            or backup.state not in (BackupState.CREATED, BackupState.PARTIALLY_DELETED)
+            or (
+                light.start_time,
+                light.hostname,
+                light.state,
+                light.copy_scopes,
+                light.copy_updated_at,
+                light.copy_encryption,
+            )
+            != (
+                backup.start_time,
+                backup.hostname,
+                backup.state,
+                backup.copy_scopes,
+                backup.copy_updated_at,
+                backup.copy_encryption,
+            )
+            or light.cloud_storage.dump() != backup.cloud_storage.dump()
+        ):
+            return False
+        if not backup.cloud_storage.enabled:
+            return True
+        cloud = self.get_cloud_storage_backup(backup.name)
+        return (
+            cloud is not None
+            and cloud.cloud_storage.dump() == backup.cloud_storage.dump()
+        )
 
     def get_backups(
         self,
@@ -1886,16 +1921,20 @@ class BackupLayout:
         entries: Iterable[CopyEntry],
         *,
         keep_going: bool = False,
+        source_encryption: dict | None = None,
         callback: Callable[[CopyEntry], None] | None = None,
         on_error: Callable[[CopyEntry, BaseException], None] | None = None,
     ) -> None:
         """
         Copy objects from one storage to another as is.
         """
+        copy_object = self._storage_loader.copy_object
+        if source_encryption is not None:
+            copy_object = partial(copy_object, source_encryption=source_encryption)
         index = 0
         for index, entry in enumerate(entries, 1):
             try:
-                self._storage_loader.copy_object(
+                copy_object(
                     entry,
                     is_async=True,
                     callback=partial(callback, entry) if callback else None,

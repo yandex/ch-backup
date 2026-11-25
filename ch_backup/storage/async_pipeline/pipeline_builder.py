@@ -315,7 +315,11 @@ class PipelineBuilder:
         return self
 
     def build_download_storage_stage(
-        self, remote_path: str, storage_config: dict | None = None
+        self,
+        remote_path: str,
+        storage_config: dict | None = None,
+        *,
+        expected_size: int | None = None,
     ) -> "PipelineBuilder":
         """
         Build downloading from storage stage.
@@ -328,7 +332,7 @@ class PipelineBuilder:
 
         self.append(
             thread_input(
-                DownloadStorageStage(stage_config, storage, remote_path),
+                DownloadStorageStage(stage_config, storage, remote_path, expected_size),
                 maxsize=queue_size,
             )
         )

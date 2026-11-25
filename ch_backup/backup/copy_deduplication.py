@@ -5,7 +5,7 @@ from concurrent.futures import Future
 from datetime import datetime, timedelta
 from hashlib import blake2b
 from itertools import islice
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
@@ -93,9 +93,15 @@ class CopyDeduplication:
     """Index verified physical local parts without keeping full metadata in the index."""
 
     def __init__(
-        self, layout: BackupLayout, cutoff: datetime, command_start: datetime
+        self,
+        layout: BackupLayout,
+        cutoff: datetime,
+        command_start: datetime,
+        *,
+        validate_owner: Callable[[BackupMetadata], bool] | None = None,
     ) -> None:
         self._layout = layout
+        self._validate_owner = validate_owner
         self.cutoff = cutoff
         self.command_start = command_start
         self._parts: dict[tuple, list[_StoredPart]] = defaultdict(list)
@@ -139,6 +145,8 @@ class CopyDeduplication:
         try:
             backup = future.result()
             if backup is None or backup.name != name or not self.eligible(backup):
+                return
+            if self._validate_owner is not None and not self._validate_owner(backup):
                 return
             parts = _local_parts(backup)
         except Exception as exc:

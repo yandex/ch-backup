@@ -22,6 +22,7 @@ from ch_backup.backup.metadata import (
 )
 from ch_backup.clickhouse.models import Database
 from ch_backup.config import DEFAULT_CONFIG
+from ch_backup.encryption import get_cloud_storage_data_encryption_metadata
 
 DEDUP_BACKUP_NAME = "20181016T210300"
 
@@ -433,3 +434,25 @@ def test_part_dedup_info_quotes_all_string_values(link_part_name):
         f"({literal},{literal},{literal},{literal},{literal_link},{literal},"
         f"42,[{literal},''],1,{literal},0,1)"
     )
+
+
+def test_native_backup_skips_export_with_another_key(
+    monkeypatch, window_context, window_backups
+):
+    """A native backup cannot link a part encrypted with another key."""
+    database, backups = window_backups
+    owner = backups[0]
+    owner.state = BackupState.CREATED
+    encryption = {**DEFAULT_CONFIG["encryption"], "key": "b" * 32}
+    owner.copy_encryption = {
+        "target": get_cloud_storage_data_encryption_metadata(encryption)
+    }
+    monkeypatch.setattr(
+        "ch_backup.backup.deduplication.utcnow", lambda: owner.start_time
+    )
+    window_context.config_root = {"encryption": {**encryption, "key": "c" * 32}}
+    collect_dedup_info(window_context, [database], [owner])
+    window_context.ch_ctl.insert_deduplication_info.assert_not_called()
+    window_context.config_root["encryption"] = encryption
+    collect_dedup_info(window_context, [database], [owner])
+    window_context.ch_ctl.insert_deduplication_info.assert_called_once()

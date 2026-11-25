@@ -294,13 +294,15 @@ class PipelineExecutor:
         is_async: bool,
         callback: Callable | None = None,
         on_error: Callable[[BaseException], None] | None = None,
+        *,
+        source_encryption: dict | None = None,
     ) -> None:
         """
         Copy object from one storage to another.
         """
         job_id = self._make_job_id(current_func_name(), entry.src_path, entry.dst_path)
 
-        pipeline = partial(copy_object_pipeline, self._config, entry)
+        pipeline = partial(copy_object_pipeline, self._config, entry, source_encryption)
         self._exec_pipeline(job_id, pipeline, is_async, callback, on_error)
 
     def wait(self, keep_going: bool = False) -> None:

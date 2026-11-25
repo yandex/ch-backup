@@ -129,6 +129,10 @@ class PipeLineCompatibleStorageEngine(StorageEngine):
         """
         pass
 
+    def claim_object(self, remote_path: str, data: bytes) -> None:
+        """Reserve an object atomically or verify an existing identical reservation."""
+        raise NotImplementedError
+
     def list_dir_with_sizes(self, remote_path: str) -> dict[str, int]:
         """Collect recursive object sizes through the shared page API."""
         result: dict[str, int] = {}

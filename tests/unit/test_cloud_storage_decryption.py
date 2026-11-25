@@ -6,6 +6,7 @@ import pytest
 from ch_backup.backup.cloud_storage_decryption import (
     CloudStorageDecryption,
     resolve_decryption_staging,
+    validate_staging_sources,
 )
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import ConfigurationError
@@ -79,3 +80,49 @@ def test_decryption_staging_validates_credentials(staging: dict, message: str) -
 
     with pytest.raises(ConfigurationError, match=message):
         resolve_decryption_staging(config, source, "source", disk)
+
+
+def test_default_port_keeps_restore_staging_outside_source() -> None:
+    """Equivalent endpoints must select a separate plaintext staging prefix."""
+    source = make_storage_config(
+        DEFAULT_CONFIG["storage"], "https://s3.example", "bucket", "a", "b"
+    )
+    disk = {
+        "endpoint": "https://s3.example:443/bucket/live/",
+        "access_key_id": "a",
+        "secret_access_key": "b",
+    }
+    storage, path = resolve_decryption_staging(
+        DEFAULT_CONFIG, source, "backups/export", disk
+    )
+    assert path == "backups/export_decrypted"
+    with (
+        patch("ch_backup.backup.cloud_storage_decryption.StorageLoader"),
+        patch("ch_backup.backup.cloud_storage_decryption.get_storage_engine") as engine,
+    ):
+        decryption = CloudStorageDecryption(DEFAULT_CONFIG, MagicMock())
+        with pytest.raises(ConfigurationError, match="overlaps"):
+            decryption.decrypt(
+                MagicMock(),
+                "s3",
+                "all",
+                source,
+                "backups/export",
+                storage,
+                "backups/export",
+            )
+        engine.assert_not_called()
+
+
+def test_staging_cannot_cover_another_source_disk() -> None:
+    """A sibling disk and a linked owner remain protected across the whole restore."""
+    source = make_storage_config(
+        DEFAULT_CONFIG["storage"], "https://s3.example", "bucket", "a", "b"
+    )
+    staging = make_storage_config(
+        DEFAULT_CONFIG["storage"], "https://s3.example:443", "bucket", "a", "b"
+    )
+    with pytest.raises(ConfigurationError, match="overlaps"):
+        validate_staging_sources(
+            staging, "owner/s3b", [(source, "backup/s3a"), (source, "owner/s3b")]
+        )

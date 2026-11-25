@@ -27,6 +27,7 @@ from ch_backup.storage.object_copy import (
     CopyEntry,
     get_s3_disk_location,
     make_storage_config,
+    physical_storage_id,
     storage_id,
 )
 from ch_backup.util import chunked
@@ -57,11 +58,19 @@ class CloudStorageDecryption:
         """Decrypt objects referenced by disk metadata into staging."""
         source_path = _normalize_prefix(source_path)
         staging_path = _normalize_prefix(staging_path)
+        validate_staging_sources(
+            staging_storage, staging_path, [(source_storage, source_path)]
+        )
         staging = self._staging_prefixes.setdefault(
             storage_id(staging_storage), (staging_storage, set())
         )
         if staging_path not in staging[1]:
-            self._cleanup_prefix(staging_storage, staging_path)
+            if get_storage_engine(staging_storage).path_exists(
+                staging_path, is_dir=True
+            ):
+                raise ConfigurationError(
+                    "Decryption staging directory is already in use"
+                )
             staging[1].add(staging_path)
 
         entries: dict[str, CopyEntry] = {}
@@ -303,14 +312,20 @@ def resolve_decryption_staging(
     return storage, staging_path
 
 
+def validate_staging_sources(
+    staging: dict, path: str, sources: Sequence[tuple[dict, str]]
+) -> None:
+    """Reject staging that overlaps any protected data on the same S3 service."""
+    if any(
+        _same_storage(storage, staging)
+        and _prefixes_overlap(_normalize_prefix(source), _normalize_prefix(path))
+        for storage, source in sources
+    ):
+        raise ConfigurationError("Decryption staging overlaps encrypted cloud storage")
+
+
 def _same_storage(first: dict, second: dict) -> bool:
-    first_id = storage_id(first)
-    second_id = storage_id(second)
-    return (
-        first_id[0] == second_id[0]
-        and str(first_id[1]).rstrip("/") == str(second_id[1]).rstrip("/")
-        and first_id[2] == second_id[2]
-    )
+    return physical_storage_id(first) == physical_storage_id(second)
 
 
 def _normalize_prefix(path: str) -> str:

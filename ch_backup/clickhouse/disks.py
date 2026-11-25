@@ -17,6 +17,7 @@ from subprocess import PIPE, Popen
 from types import TracebackType
 from typing import IO, Any, Callable, Iterator, Literal, Sequence
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import xmltodict
 
@@ -24,6 +25,7 @@ from ch_backup import logging
 from ch_backup.backup.cloud_storage_decryption import (
     CloudStorageDecryption,
     resolve_decryption_staging,
+    validate_staging_sources,
 )
 from ch_backup.backup.layout import BackupLayout, table_shadow_relpath
 from ch_backup.backup.metadata import (
@@ -281,16 +283,25 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         """Create temporary disks and finish their asynchronous metadata loads."""
         self._read_configured_disks()
         if not self._skip_cloud_storage:
-            for disk_name in self._backup_meta.cloud_storage.disks:
-                self._create_temporary_disk(
-                    self._backup_meta,
-                    disk_name,
-                    self._desired_tables,
-                )
-            for backup_meta, disk_name, tables in self._linked_backups_data():
-                self._create_temporary_disk(
-                    backup_meta, disk_name, tables, link=backup_meta.name
-                )
+            disks: list[
+                tuple[
+                    BackupMetadata | CloudStorageBackup,
+                    str,
+                    Sequence[TableMetadata] | Literal["all"],
+                    str | None,
+                ]
+            ] = [
+                (self._backup_meta, name, self._desired_tables, None)
+                for name in self._backup_meta.cloud_storage.disks
+            ]
+            disks.extend(
+                (owner, name, tables, owner.name)
+                for owner, name, tables in self._linked_backups_data()
+            )
+            protected = [(owner, name) for owner, name, _, _ in disks]
+            self._validate_staging(protected)
+            for owner, name, tables, link in disks:
+                self._create_temporary_disk(owner, name, tables, link=link)
         self._backup_layout.wait()
         self._ch_availible_disks = self._ch_ctl.get_disks()
         self._render_ch_disks_config()
@@ -318,6 +329,29 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
                     super()._cleanup(type(e), e)
                     raise
         return super()._cleanup(exc_type, value)
+
+    def _validate_staging(
+        self, disks: Sequence[tuple[BackupMetadata | CloudStorageBackup, str]]
+    ) -> None:
+        """Protect all source disks, including linked owners, before opening the first one."""
+        if not any(owner.cloud_storage.data_encryption for owner, _ in disks):
+            return
+        sources = []
+        staging = []
+        for owner, name in disks:
+            if name not in self._disks:
+                raise ClickHouseDisksException(f"Missing cloud disk {name}")
+            config = self._source_disk_config(owner, name)
+            storage, path = self._source_storage(owner, config, name)
+            sources.append((storage, path))
+            if owner.cloud_storage.data_encryption:
+                staging.append(
+                    resolve_decryption_staging(
+                        self._config, storage, path, self._disks[name]
+                    )
+                )
+        for storage, path in staging:
+            validate_staging_sources(storage, path, sources)
 
     def _linked_backups_data(
         self,
@@ -431,6 +465,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
                 source_path,
                 self._disks[disk_name],
             )
+            staging_path = os.path.join(staging_path, uuid4().hex)
             self._decryption.decrypt(
                 backup_meta,
                 disk_name,

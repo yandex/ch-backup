@@ -66,6 +66,39 @@ def get_cloud_storage_data_encryption_metadata(config: dict) -> dict[str, Any]:
     }
 
 
+def validate_export_encryption(
+    config: Config | dict, metadata: Mapping[str, Any]
+) -> None:
+    """Check the export key and format before mutating the restore destination."""
+    encryption = config["encryption"]
+    if encryption["type"] != "nacl" or not isinstance(encryption.get("key"), str):
+        raise ConfigurationError(
+            "A NaCl encryption key is required to restore this export"
+        )
+    try:
+        get_encryption("nacl", encryption)
+    except (UnicodeError, ValueError):
+        raise ConfigurationError(
+            "Invalid NaCl encryption key for export restore"
+        ) from None
+    expected = get_cloud_storage_data_encryption_metadata(encryption)
+    target = metadata.get("target")
+    if metadata.get("version") != 1 or not isinstance(target, dict):
+        raise ConfigurationError("Invalid backup export encryption metadata")
+    key_id = target.get("key_id")
+    if (
+        any(
+            target.get(field) != expected[field]
+            for field in ("version", "type", "chunk_size")
+        )
+        or not isinstance(key_id, str)
+        or not hmac.compare_digest(key_id, expected["key_id"])
+    ):
+        raise ConfigurationError(
+            "Restore encryption does not match the exported backup"
+        )
+
+
 def validate_cloud_storage_data_encryption_config(
     config: Config | dict, metadata: Mapping[str, Any]
 ) -> dict:

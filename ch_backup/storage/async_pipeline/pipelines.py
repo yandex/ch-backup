@@ -28,6 +28,7 @@ from ch_backup.encryption import (
     calc_encrypted_size_from_config,
     get_cloud_storage_data_encryption_config,
 )
+from ch_backup.exceptions import StorageError
 from ch_backup.storage.async_pipeline.pipeline_builder import PipelineBuilder
 from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.object_copy import CopyEntry
@@ -281,11 +282,13 @@ def download_files_pipeline(
     run(builder.pipeline())
 
 
-def copy_object_pipeline(config: dict, entry: CopyEntry) -> None:
+def copy_object_pipeline(
+    config: dict, entry: CopyEntry, source_encryption: dict | None = None
+) -> None:
     """
     Entrypoint of copy object pipeline. Optionally transform object data in transit.
     """
-    if entry.encrypt and entry.decrypt:
+    if entry.encrypt and entry.decrypt and not entry.backup_encryption:
         raise ValueError("Object cannot be encrypted and decrypted at the same time")
 
     if entry.server_side:
@@ -296,28 +299,43 @@ def copy_object_pipeline(config: dict, entry: CopyEntry) -> None:
         )
         return
 
-    encryption_config = (
-        get_cloud_storage_data_encryption_config(config)
-        if entry.encrypt or entry.decrypt
-        else None
+    encryption = (
+        config["encryption"]
+        if entry.backup_encryption
+        else (
+            get_cloud_storage_data_encryption_config(config)
+            if entry.encrypt or entry.decrypt
+            else None
+        )
     )
+    decryption = source_encryption if entry.backup_encryption else encryption
+    if entry.decrypt and decryption is None:
+        raise ValueError("Source encryption settings are required")
+    expected_size = entry.size if entry.encrypt or entry.backup_encryption else None
 
     if entry.size == 0:
         # Encryption is chunk-based, so an empty object has no encrypted chunks.
         # Uploading stage doesn't create an object if there is no data to upload.
+        if (
+            expected_size is not None
+            and get_storage_engine(entry.src_storage).get_object_size(
+                entry.src_path.lstrip("/")
+            )
+            != 0
+        ):
+            raise StorageError(f'Copy source "{entry.src_path}" changed size')
         get_storage_engine(entry.dst_storage).upload_data(b"", entry.dst_path)
         return
 
     builder = PipelineBuilder(config)
 
     builder.build_download_storage_stage(
-        entry.src_path, storage_config=entry.src_storage
+        entry.src_path, storage_config=entry.src_storage, expected_size=expected_size
     )
-    if encryption_config:
-        if entry.encrypt:
-            builder.build_encrypt_stage(encryption_config)
-        else:
-            builder.build_decrypt_stage(encryption_config)
+    if entry.decrypt:
+        builder.build_decrypt_stage(decryption)
+    if entry.encrypt:
+        builder.build_encrypt_stage(encryption)
     builder.build_uploading_stage(
         entry.dst_path, entry.dst_size, storage_config=entry.dst_storage
     )

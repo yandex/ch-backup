@@ -767,6 +767,13 @@ def fallback_context_fixture():
         )
     for part in ("all_1_1_0", "all_2_2_0"):
         objects[f"ch_backup/old/data/db/table/{part}/data.bin"] = "payload"
+
+    def claim(path: str, data: bytes) -> None:
+        """Reserve an empty key or match its existing contents."""
+        if objects.setdefault(path, data.decode()) != data.decode():
+            raise StorageError(f"Conflicting copy parameters for {path}")
+
+    storage.claim_object.side_effect = claim
     storage.list_dir.return_value = ["new", "old"]
     storage.path_exists.side_effect = lambda path, **_: path in objects
     storage.download_data.side_effect = lambda path, **_: objects[path]

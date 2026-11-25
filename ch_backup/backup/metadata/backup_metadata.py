@@ -126,6 +126,9 @@ class BackupMetadata:
         self.cloud_storage: CloudStorageMetadata = CloudStorageMetadata()
         # Location of the storage the backup was copied from (for backups created by "copy" command).
         self.copied_from: dict | None = None
+        self.files_manifest: dict | None = None
+        self.copy_reencrypted = False
+        self.copy_encryption: dict[str, Any] | None = None
         self.copy_scopes: dict[CopyScope, CopyScopeStatus] = {}
         self.copy_updated_at: datetime | None = None
         self._skipped_data_counts = (0, 0)
@@ -196,13 +199,18 @@ class BackupMetadata:
         meta: dict[str, Any] = {}
         if self.copied_from:
             meta["copied_from"] = self.copied_from
-        if self.copy_scopes or self.copy_updated_at:
+        if self.copy_scopes or self.copy_updated_at or self.copy_encryption is not None:
             meta["copy"] = {
                 "scopes": {
                     scope.value: status.value
                     for scope, status in self.copy_scopes.items()
                 }
             }
+            if self.copy_encryption is not None:
+                meta["copy"]["encryption"] = self.copy_encryption
+                meta["copy"]["reencrypted"] = self.copy_reencrypted
+            if self.files_manifest is not None:
+                meta["copy"]["files_manifest"] = self.files_manifest
             if self.copy_updated_at:
                 meta["copy"]["updated_at"] = self._format_time(self.copy_updated_at)
         data_skipped_tables, incomplete_tables = self.count_skipped_data_tables()
@@ -410,6 +418,11 @@ class BackupMetadata:
             backup.copied_from = meta.get("copied_from")
             backup.copy_scopes = {}
             copy_meta = meta.get("copy") or {}
+            backup.copy_encryption = copy_meta.get("encryption")
+            backup.copy_reencrypted = copy_meta.get(
+                "reencrypted", backup.copy_encryption is not None
+            )
+            backup.files_manifest = copy_meta.get("files_manifest")
             for scope in CopyScope:
                 with suppress(ValueError):
                     backup.copy_scopes[scope] = CopyScopeStatus(
@@ -646,6 +659,19 @@ class BackupMetadata:
             self.real_size -= part.size
         raw_part["link"] = backup_name
         raw_part["link_part_name"] = part_name if part_name != part.name else None
+
+    def mark_export_encrypted(self) -> None:
+        """Mark the exported schema and archives as encrypted."""
+        self.encrypted = True
+        if self.cloud_storage.enabled:
+            self.cloud_storage.encrypted = True
+        for table in self.get_tables():
+            for part in table.raw_metadata["parts"].values():
+                if (part.get("disk_name") or "default") not in self.cloud_storage.disks:
+                    part["encrypted"] = True
+            for parts in table.raw_metadata.get("detached_parts", {}).values():
+                for part in parts.values():
+                    part["encrypted"] = True
 
     def skip_table_data(self, db_name: str, table_name: str, reason: str) -> None:
         """
