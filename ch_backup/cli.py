@@ -16,7 +16,7 @@ from functools import wraps
 from pathlib import Path as PathlibPath
 from typing import Any, Iterable
 
-from click import Choice, Path, argument, pass_context, style
+from click import Choice, ClickException, Path, argument, pass_context, style
 from cloup import (
     Color,
     Context,
@@ -27,12 +27,17 @@ from cloup import (
     option,
     option_group,
 )
-from cloup.constraints import constraint, mutually_exclusive
+from cloup.constraints import constraint, mutually_exclusive, require_one
 from humanfriendly import format_timespan
 from tabulate import tabulate
 
 from ch_backup.command_context import command_context
-from ch_backup.exceptions import BackupNotFound, ConfigurationError, TerminatingSignal
+from ch_backup.exceptions import (
+    BackupCheckError,
+    BackupNotFound,
+    ConfigurationError,
+    TerminatingSignal,
+)
 
 from . import logging
 from .backup.copy_deduplication import copy_deduplication_cutoff
@@ -1198,6 +1203,93 @@ def copy_command(
         raise
     finally:
         print_copy_report(report, report_path)
+
+
+@command(name="check")  # type: ignore
+@argument("names", metavar="[BACKUP]...", nargs=-1)
+@option(
+    "-a",
+    "--all",
+    "all_",
+    is_flag=True,
+    default=False,
+    help="Check all backups.",
+)
+@option(
+    "--deep",
+    is_flag=True,
+    default=False,
+    help="Download data of parts and verify it as restore does. "
+    "Without it, only presence and size of data are checked.",
+)
+@option("--workers", type=int, default=4, help="Number of objects checked in parallel.")
+@option(
+    "--tmp-dir",
+    type=Path(exists=True, file_okay=False),
+    help="Directory for parts downloaded by deep check.",
+)
+@option(
+    "--format",
+    "format_",
+    type=Choice(["table", "json"]),
+    default="table",
+    help='Output format. The default is "table" format.',
+)
+@constraint(require_one, ["names", "all_"])
+# pylint: disable=too-many-arguments,too-many-positional-arguments
+def check_command(
+    ctx: Context,
+    ch_backup: ClickhouseBackup,
+    names: tuple[str, ...],
+    all_: bool,
+    deep: bool,
+    workers: int,
+    tmp_dir: str | None,
+    format_: str,
+) -> None:
+    """
+    Check that backups are readable and their data is in place.
+
+    Exit with code 1 if an operational error prevents the check from finishing.
+    Exit with code 2 if any broken backup is in the state "created" or its state is unknown.
+    """
+    try:
+        results = ch_backup.check(
+            None if all_ else list(names), deep=deep, workers=workers, tmp_dir=tmp_dir
+        )
+    except BackupCheckError as error:
+        raise ClickException(str(error)) from None
+
+    records = [
+        {
+            "name": result.name,
+            "state": result.state,
+            "status": (
+                ("broken" if result.broken else "ok") if result.checked else "skipped"
+            ),
+            "unverified": result.unverified,
+            "skipped_data": (
+                result.skipped_data
+                if format_ == "json"
+                else "\n".join(result.skipped_data)
+            ),
+            "problems": (
+                result.problems if format_ == "json" else "\n".join(result.problems)
+            ),
+        }
+        for result in results
+    ]
+    if format_ == "json":
+        json.dump(records, sys.stdout, indent=2)
+        print()
+    else:
+        print(tabulate(records, headers="keys"))
+
+    if any(
+        result.broken and result.state in (BackupState.CREATED.value, None)
+        for result in results
+    ):
+        ctx.exit(2)
 
 
 @command(name="purge")
