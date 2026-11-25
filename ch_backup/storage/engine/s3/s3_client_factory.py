@@ -2,6 +2,7 @@
 S3 client factory.
 """
 
+import os
 import socket
 import threading
 from copy import deepcopy
@@ -14,6 +15,8 @@ import boto3
 import botocore.session
 import requests
 from botocore.config import Config
+from botocore.configloader import load_config
+from botocore.credentials import CredentialResolver, ProcessProvider
 
 from ch_backup import logging
 from ch_backup.config import DEFAULT_CONFIG
@@ -85,6 +88,18 @@ class S3ClientFactory:
             if path:
                 session = botocore.session.get_session()
                 session.set_config_variable("config_file", path)
+                file_config = load_config(path)
+                profiles = file_config["profiles"]
+                profile = "default"
+                if "credential_process" not in profiles.get(profile, {}):
+                    profile = session.get_config_variable("profile") or profile
+                if "credential_process" in profiles.get(profile, {}):
+                    session.set_config_variable("profile", profile)
+                    session.set_config_variable("credentials_file", os.devnull)
+                    provider = ProcessProvider(profile, lambda: file_config)
+                    session.register_component(
+                        "credential_provider", CredentialResolver([provider])
+                    )
                 session.full_config  # pylint: disable=pointless-statement
         self._s3_session = boto3.session.Session(
             aws_access_key_id=credentials_config["access_key_id"],

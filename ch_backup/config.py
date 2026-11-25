@@ -442,14 +442,15 @@ class Config:
         config_file: str | None = None,
         patch: dict | None = None,
         *,
-        for_copy_target: bool = False,
+        for_copy_target: bool = True,
     ) -> "Config":
         """
-        Return a copy of the config with applied changes from config file and the patch.
+        Derive a copy target from file and patch overrides. Set for_copy_target=False
+        to keep the same storage's AWS configuration for another operation.
         """
         config = copy.deepcopy(self)
         if for_copy_target:
-            config["storage"]["credentials"].pop("aws_config_file", None)
+            config["storage"]["credentials"]["aws_config_file"] = None
             config["storage"].pop("_aws_config_revision", None)
         if config_file:
             config.merge(self._load_config_file(config_file))
