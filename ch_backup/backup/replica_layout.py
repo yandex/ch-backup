@@ -80,6 +80,7 @@ class ReplicaLayout(BackupLayout):
         use_light_meta: bool = False,
         *,
         allow_pending: bool = False,
+        fallback_to_full: bool = True,
     ) -> BackupMetadata:
         """
         Read the requested objects of the replica as a backup without data.

@@ -2,6 +2,9 @@
 Writing files from TAR stream stage.
 """
 
+import errno
+import os
+import stat
 from enum import Enum
 from pathlib import Path
 from tarfile import BLOCKSIZE, ENCODING, GNUTYPE_LONGNAME, NUL, TarInfo
@@ -181,9 +184,51 @@ class WriteFilesStage(TarStreamProcessorBase):
 
     def _on_file_start(self) -> None:
         assert self._tarinfo
-        filepath = self._dir / self._tarinfo.name
-        filepath.parent.mkdir(parents=True, exist_ok=True)
-        self._fobj = filepath.open("wb")
+        member = Path(self._tarinfo.name)
+        if (
+            not self._tarinfo.isreg()
+            or member.is_absolute()
+            or not member.parts
+            or ".." in member.parts
+        ):
+            raise ValueError("Invalid file in TAR archive")
+        self._dir.mkdir(parents=True, exist_ok=True)
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        parent = os.open(self._dir, directory_flags)
+        try:
+            for component in member.parts[:-1]:
+                try:
+                    child = os.open(component, directory_flags, dir_fd=parent)
+                except FileNotFoundError:
+                    try:
+                        os.mkdir(component, dir_fd=parent)
+                    except FileExistsError:
+                        pass
+                    child = os.open(component, directory_flags, dir_fd=parent)
+                os.close(parent)
+                parent = child
+            fd = os.open(
+                member.name,
+                os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+                0o666,
+                dir_fd=parent,
+            )
+        except OSError as error:
+            if error.errno in (errno.ENOTDIR, errno.EISDIR, errno.ELOOP):
+                raise ValueError("Conflicting TAR member path") from None
+            raise
+        finally:
+            os.close(parent)
+        stream = os.fdopen(fd, "wb")
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("Invalid TAR destination file")
+            stream.truncate()
+        except BaseException:
+            stream.close()
+            raise
+        self._fobj = stream
 
     def _write_data(self, data: bytes) -> None:
         assert self._fobj

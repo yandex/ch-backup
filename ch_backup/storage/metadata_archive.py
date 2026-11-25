@@ -95,6 +95,10 @@ class TemporaryMetadataArchive:
         """Return the filename without performing I/O."""
         return self._path
 
+    def close(self) -> None:
+        """Remove the owned temporary archive."""
+        self._cleanup()
+
     def read_batch(
         self, continuation: int | None = None
     ) -> tuple[list[tuple[str, bytes]], int | None]:
