@@ -214,16 +214,13 @@ class CopyContext:
                 while True:
                     batch, continuation = entries.read_batch(continuation, limit=128)
                     for entry in batch:
-                        record = (
-                            _record(
-                                entry, self._data_encryption, self._backup_encryption
-                            )
-                            if self._backup_encryption is not None
-                            else _record(entry)
+                        line = (
+                            _record(entry, backup_encryption=self._backup_encryption)
+                            + b"\n"
                         )
                         if self._backup_encryption is not None:
-                            digest.update(record + b"\n")
-                        stream.write(record + b"\n")
+                            digest.update(line)
+                        stream.write(line)
                     if continuation is None:
                         break
             self._engine.upload_file(

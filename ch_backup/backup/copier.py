@@ -9,11 +9,10 @@ import json
 import os
 from contextlib import closing, contextmanager
 from datetime import datetime
-from functools import partial
+from functools import lru_cache, partial
 from pathlib import PurePosixPath
 from tarfile import BLOCKSIZE
 from typing import Callable, Iterator, NamedTuple, Sequence
-from urllib.parse import quote
 
 from ch_backup import logging
 from ch_backup.backup.checker_archive import cloud_part_member, cloud_table_paths
@@ -38,6 +37,7 @@ from ch_backup.backup.layout import (
     _db_metadata_path,
     _db_metadata_path_tar,
     _detached_part_path,
+    _disk_metadata_path,
     _http_handlers_data_path,
     _named_collections_data_path,
     _table_metadata_path,
@@ -605,9 +605,7 @@ class BackupCopier:
                 raise ClickhouseBackupError(
                     f"Backup {backup_name} already exists in target storage and it is not a copy of the source backup"
                 )
-            if published and (
-                self._reencrypt or target_backup.state == BackupState.CREATED
-            ):
+            if published:
                 if (
                     not self._reencrypt
                     and target_backup.cloud_storage.data_encryption
@@ -741,7 +739,7 @@ class BackupCopier:
                 or previous.copy_encryption != backup.copy_encryption
             ):
                 raise ClickhouseBackupError("Target backup requires copy.reencrypt")
-            return True
+            return previous is not None and previous.state == BackupState.CREATED
         for part in backup.get_detached_parts():
             if part.object_storage:
                 raise ClickhouseBackupError(
@@ -1207,37 +1205,25 @@ class BackupCopier:
                 )
 
         destinations = CopyIndex() if self._reencrypt else None
-        sources = (
-            [
-                (
-                    physical_storage_id(self._storage),
-                    _key(self._layout.get_backup_path(backup.name)),
-                ),
-                (
-                    physical_storage_id(self._storage),
-                    _key(self._layout.get_cloud_storage_path(backup.name)),
-                ),
-            ]
-            if self._reencrypt and CopyScope.FILES in self._scopes
-            else []
-        )
-        if self._reencrypt and len(prefixes) == 3:
-            external_storage, external_prefix = prefixes[-1]
-            if any(
-                physical_storage_id(storage) == physical_storage_id(external_storage)
-                and _prefixes_overlap(_key(path), _key(external_prefix))
+        if self._reencrypt:
+            if len(prefixes) == 3 and any(
+                _locations_overlap(*prefixes[-1], storage, path)
                 for storage, path in prefixes[:-1]
             ):
                 raise ClickhouseBackupError("Cloud export overlaps the target backup")
-        for storage, target in prefixes:
-            if any(
-                physical_storage_id(storage) == identity
-                and _prefixes_overlap(_key(target), source)
-                for identity, source in sources
-            ):
-                raise ClickhouseBackupError(
-                    f'Target prefix "{target}" overlaps the source backup'
+            if CopyScope.FILES in self._scopes:
+                source_paths = (
+                    self._layout.get_backup_path(backup.name),
+                    self._layout.get_cloud_storage_path(backup.name),
                 )
+                for storage, target in prefixes:
+                    if any(
+                        _locations_overlap(storage, target, self._storage, path)
+                        for path in source_paths
+                    ):
+                        raise ClickhouseBackupError(
+                            f'Target prefix "{target}" overlaps the source backup'
+                        )
         for scope_plan in plan.values():
             continuation = None
             while True:
@@ -1269,9 +1255,7 @@ class BackupCopier:
     ) -> None:
         """Reject overwrites of source data and duplicate destination paths."""
         for storage, prefix in prefixes:
-            if physical_storage_id(storage) == physical_storage_id(
-                entry.src_storage
-            ) and _prefixes_overlap(_key(prefix), _key(entry.src_path)):
+            if _locations_overlap(storage, prefix, entry.src_storage, entry.src_path):
                 raise ClickhouseBackupError(
                     f'Target prefix "{prefix}" overlaps source "{entry.src_path}"'
                 )
@@ -1357,17 +1341,11 @@ class BackupCopier:
         self, source: str, target: str, size: int, encrypted: bool
     ) -> CopyEntry:
         """Plan transfer of a backup file, preserving its encoded payload."""
-        if not self._reencrypt:
-            return CopyEntry(
-                self._storage, self._target_storage, source, target, size, size
-            )
-        destination_size = (
-            size
-            if encrypted
-            else calc_encrypted_size_from_config(
+        destination_size = size
+        if self._reencrypt and not encrypted:
+            destination_size = calc_encrypted_size_from_config(
                 self._target_config["encryption"], size
             )
-        )
         return CopyEntry(
             self._storage,
             self._target_storage,
@@ -1375,9 +1353,9 @@ class BackupCopier:
             target,
             size,
             destination_size,
-            encrypt=True,
-            decrypt=encrypted,
-            backup_encryption=True,
+            encrypt=self._reencrypt,
+            decrypt=self._reencrypt and encrypted,
+            backup_encryption=self._reencrypt,
         )
 
     # pylint: disable=too-many-locals
@@ -1396,9 +1374,8 @@ class BackupCopier:
             size = _listed_size(files, path)
             if size is None:
                 raise ClickhouseBackupError(f'Missing backup file "{source}/{path}"')
-            if planned.contains(path):
+            if planned.put_if_absent(path, b"") is not None:
                 raise ClickhouseBackupError(f'Ambiguous backup file "{source}/{path}"')
-            planned.put(path, b"")
             plan.entries.append(
                 self._backup_file_entry(
                     f"{source}/{path}", os.path.join(target, path), size, encrypted
@@ -1419,7 +1396,8 @@ class BackupCopier:
                 ),
                 directories[0],
             )
-            self._plan_export_part(part, directory, names, add)
+            sizes = [add(f"{directory}/{name}", part.encrypted) for name in names]
+            self._check_export_part_size(part, directory, sizes)
 
         for detached in backup.get_detached_parts():
             directories = [
@@ -1438,7 +1416,8 @@ class BackupCopier:
                 (path for path in directories if files.contains(f"{path}/{name}")),
                 directories[0],
             )
-            self._plan_export_part(detached, directory, [name], add)
+            size = add(f"{directory}/{name}", detached.encrypted)
+            self._check_export_part_size(detached, directory, [size])
 
         self._plan_export_definitions(backup, files, add)
         position = 0
@@ -1452,15 +1431,13 @@ class BackupCopier:
                     f'Unrecognized backup file "{source}/{path}"'
                 )
 
-    def _plan_export_part(
+    def _check_export_part_size(
         self,
         part: PartMetadata | DetachedPartMetadata,
         directory: str,
-        names: Sequence[str],
-        add: Callable[[str, bool], int],
+        sizes: Sequence[int],
     ) -> None:
         """Verify part sizes using the metadata independently of the S3 listing."""
-        sizes = [add(f"{directory}/{name}", part.encrypted) for name in names]
         encryption = self._config["encryption"]
         if part.tarball or isinstance(part, DetachedPartMetadata):
             expected = calc_tarball_size(list(part.files), part.size)
@@ -1576,6 +1553,12 @@ class BackupCopier:
         Without a target window, keep usable source links. Materialize unresolved links
         from source and omit files of newly linked own parts from the copy plan.
         """
+
+        @lru_cache(maxsize=1)
+        def read_owner(name: str) -> BackupMetadata | None:
+            """Reuse the last source owner's metadata while planning this backup."""
+            return self._layout.get_backup(name, allow_pending=True)
+
         excluded_dirs = set()
         for part in backup.get_parts():
             if part.disk_name in backup.cloud_storage.disks:
@@ -1595,7 +1578,9 @@ class BackupCopier:
                             excluded_dirs.update(get_data_part_relative_dirs(part))
                         continue
                 if part.link is not None:
-                    self._plan_linked_part(backup, target_meta, plan, part, result)
+                    self._plan_linked_part(
+                        backup, target_meta, plan, part, result, read_owner
+                    )
         if excluded_dirs:
             # Drop only the matched local part directories, preserving schema, detached and cloud data.
             prefix = _key(self._layout.get_backup_path(backup.name)).rstrip("/") + "/"
@@ -1617,6 +1602,7 @@ class BackupCopier:
         plan: _ScopePlan,
         part: PartMetadata,
         result: BackupCopyResult,
+        read_owner: Callable[[str], BackupMetadata | None],
     ) -> None:
         """Materialize one local part when its target link is unusable."""
         if (
@@ -1631,8 +1617,9 @@ class BackupCopier:
         assert part.link
         target_backup_path = self._target_layout.get_backup_path(backup.name)
         source_files = self._get_source_backup_files(part.link)
+        physical_part = part
         if self._reencrypt:
-            owner = self._layout.get_backup(part.link, allow_pending=True)
+            owner = read_owner(part.link)
             owner_part = (
                 owner.find_part(part.database, part.table, part.deduplicated_part_name)
                 if owner
@@ -1652,23 +1639,17 @@ class BackupCopier:
                 raise ClickhouseBackupError(
                     f"Missing or incompatible owner of part {part.name}"
                 )
+            assert target_meta.copy_encryption is not None
             if (
                 owner
                 and owner.copy_encryption
-                and (
-                    owner.copy_encryption.get("target")
-                    != get_cloud_storage_data_encryption_metadata(
-                        self._config["encryption"]
-                    )
-                )
+                and owner.copy_encryption.get("target")
+                != target_meta.copy_encryption["source"]
             ):
                 raise ClickhouseBackupError(
                     f"Source key does not match owner of part {part.name}"
                 )
-            self._plan_export_linked_part(
-                backup, target_meta, plan, part, owner_part, source_files
-            )
-            return
+            physical_part = owner_part
         file_names = get_data_part_file_names(part)
         part_dirs = get_data_part_relative_dirs(part)
         for part_dir in part_dirs:
@@ -1677,7 +1658,7 @@ class BackupCopier:
             ):
                 break
         else:
-            if not self._keep_going:
+            if self._reencrypt or not self._keep_going:
                 raise ClickhouseBackupError(
                     f'Data of part "{part.name}" of table "{part.database}"."{part.table}" '
                     f'deduplicated with backup "{part.link}" is not found in source storage'
@@ -1698,6 +1679,7 @@ class BackupCopier:
             part.table,
             part.link,
         )
+        _validate_relative_key(part_dir)
         src_dir = os.path.join(self._layout.get_backup_path(part.link), part_dir)
         # Always use the escaped target path, even for legacy source layouts.
         # A retry must overwrite partial files rather than leave a shadowing alias.
@@ -1705,6 +1687,7 @@ class BackupCopier:
             target_backup_path, os.path.dirname(part_dirs[0]), part.name
         )
         _validate_relative_key(part.name)
+        sizes = []
         error_count = len(result.errors)
         for file_name in file_names:
             with self._planning_step(
@@ -1718,67 +1701,21 @@ class BackupCopier:
                         f'"{part.database}"."{part.table}" deduplicated with backup '
                         f'"{part.link}" is not found in source storage'
                     )
+                if self._reencrypt:
+                    sizes.append(size)
                 dst_file_name = f"{part.name}.tar" if part.tarball else file_name
                 plan.entries.append(
                     self._backup_file_entry(
                         os.path.join(src_dir, file_name),
                         os.path.join(dst_dir, dst_file_name),
                         size,
-                        part.encrypted,
+                        physical_part.encrypted,
                     )
                 )
         if len(result.errors) == error_count:
+            if self._reencrypt:
+                self._check_export_part_size(physical_part, part_dir, sizes)
             target_meta.unlink_part(part)
-
-    def _plan_export_linked_part(
-        self,
-        backup: BackupMetadata,
-        target: BackupMetadata,
-        plan: _ScopePlan,
-        part: PartMetadata,
-        owner: PartMetadata,
-        files: CopyIndex,
-    ) -> None:
-        """Materialize a linked part after verifying its physical source."""
-        dirs = get_data_part_relative_dirs(part)
-        names = get_data_part_file_names(part)
-        directory = next(
-            (
-                path
-                for path in dirs
-                if all(files.contains(f"{path}/{name}") for name in names)
-            ),
-            dirs[0],
-        )
-        assert part.link is not None
-        source = self._layout.get_backup_path(part.link).rstrip("/")
-        destination = os.path.join(
-            self._target_layout.get_backup_path(backup.name),
-            os.path.dirname(dirs[0]),
-            part.name,
-        )
-
-        def add(path: str, encrypted: bool) -> int:
-            """Plan one file of the linked part under its new name."""
-            _validate_relative_key(path)
-            size = _listed_size(files, path)
-            if size is None:
-                raise ClickhouseBackupError(f'Missing backup file "{source}/{path}"')
-            name = (
-                part.name + ".tar"
-                if part.tarball
-                else path.removeprefix(directory + "/")
-            )
-            _validate_relative_key(name)
-            plan.entries.append(
-                self._backup_file_entry(
-                    f"{source}/{path}", os.path.join(destination, name), size, encrypted
-                )
-            )
-            return size
-
-        self._plan_export_part(owner, directory, names, add)
-        target.unlink_part(part)
 
     @staticmethod
     def _materialized_part_key(part: PartMetadata) -> tuple:
@@ -1968,15 +1905,12 @@ class BackupCopier:
                         result,
                     )
                     if files.count_files():
-                        extension = (
-                            ".tar.gz" if backup.cloud_storage.compressed else ".tar"
-                        )
-                        remote_path = os.path.join(
+                        remote_path = _disk_metadata_path(
                             self._target_layout.get_cloud_storage_path(backup.name),
-                            "disks",
+                            table.database,
+                            table.name,
                             disk_name,
-                            quote(table.database, safe=""),
-                            quote(table.name, safe="") + extension,
+                            backup.cloud_storage.compressed,
                         )
                         plan.rewritten_cloud_storage_metadata.append(
                             _RewrittenTarball(remote_path, files)
@@ -2076,35 +2010,34 @@ class BackupCopier:
                                     with self._planning_step(
                                         copy_result, f"{remote_path}:{file_name}"
                                     ):
-                                        if planned_members is not None:
-                                            member = cloud_part_member(file_name)
-                                            if (
-                                                member is None
-                                                or member[0] not in table_paths
-                                                or member[1] not in names
-                                            ):
+                                        member = cloud_part_member(file_name)
+                                        if member and member[0] in table_paths:
+                                            table_path, owner_name, filename = member
+                                            if owner_name not in names:
                                                 continue
-                                            planned_members.put(
-                                                f"{member[1]}/{member[2]}", b""
-                                            )
-                                        components = file_name.split("/")
-                                        # A part may contain projection subdirectories; match its directory
-                                        # anywhere above the file rather than just its immediate parent.
-                                        index = next(
-                                            (
-                                                i
-                                                for i, name in enumerate(
-                                                    components[:-1]
+                                            part = names[owner_name]
+                                            if planned_members is not None:
+                                                planned_members.put(
+                                                    f"{owner_name}/{filename}", b""
                                                 )
-                                                if name in names
-                                            ),
-                                            None,
-                                        )
-                                        if index is None:
+                                            target_file = (
+                                                f"{table_path}/{part.name}/{filename}"
+                                            )
+                                        elif planned_members is not None:
                                             continue
-                                        part = names[components[index]]
+                                        else:
+                                            components = file_name.split("/")
+                                            for index, name in enumerate(
+                                                components[:-1]
+                                            ):
+                                                if name in names:
+                                                    break
+                                            else:
+                                                continue
+                                            part = names[components[index]]
+                                            components[index] = part.name
+                                            target_file = "/".join(components)
                                         found.add(part.name)
-                                        components[index] = part.name
                                         data = self._plan_metadata_objects(
                                             data,
                                             file_name,
@@ -2117,7 +2050,7 @@ class BackupCopier:
                                             copy_result,
                                             source_data_encryption=source.cloud_storage.data_encryption,
                                         )
-                                        writer.append(("/".join(components), data))
+                                        writer.append((target_file, data))
                                 if continuation is None:
                                     break
                     for part in source_parts:
@@ -2237,20 +2170,19 @@ class BackupCopier:
                 src_storage, src_prefix, src_path_override = (
                     self._get_source_cloud_storage(backup, disk_name)
                 )
-                if self._reencrypt and physical_storage_id(
-                    src_storage
-                ) == physical_storage_id(target_storage):
-                    source_prefix = (
-                        src_path_override
-                        if src_path_override is not None
-                        else src_prefix
+                source_prefix = (
+                    src_prefix if src_path_override is None else src_path_override
+                )
+                if (
+                    self._reencrypt
+                    and source_prefix is not None
+                    and _locations_overlap(
+                        src_storage, source_prefix, target_storage, dst_prefix
                     )
-                    if source_prefix is not None and _prefixes_overlap(
-                        source_prefix, dst_prefix
-                    ):
-                        raise ClickhouseBackupError(
-                            "Target cloud prefix overlaps the source disk"
-                        )
+                ):
+                    raise ClickhouseBackupError(
+                        "Target cloud prefix overlaps the source disk"
+                    )
                 paths = layout.get_cloud_storage_metadata_remote_paths(
                     name, disk_name, backup.cloud_storage.compressed, "all"
                 )
@@ -2616,11 +2548,7 @@ class BackupCopier:
             self._target_layout.copy_objects(
                 self._resolve_copy_mode(plan.entries, result, on_error=failed),
                 keep_going=self._keep_going,
-                **(
-                    {"source_encryption": self._source_encryption}
-                    if self._reencrypt
-                    else {}
-                ),
+                source_encryption=self._source_encryption,
                 callback=completed,
                 on_error=failed,
             )
@@ -2979,10 +2907,14 @@ def _cloud_storage_copy_entry(
     )
 
 
-def _prefixes_overlap(first: str, second: str) -> bool:
-    """Compare complete S3 key components, treating the bucket root as universal."""
-    first = first.rstrip("/")
-    second = second.rstrip("/")
+def _locations_overlap(
+    storage: dict, prefix: str, other_storage: dict, other_prefix: str
+) -> bool:
+    """Check whether two paths share a bucket and overlap on a key boundary."""
+    if physical_storage_id(storage) != physical_storage_id(other_storage):
+        return False
+    first = _key(prefix).rstrip("/")
+    second = _key(other_prefix).rstrip("/")
     return (
         not first
         or not second
@@ -2995,9 +2927,8 @@ def _prefixes_overlap(first: str, second: str) -> bool:
 def _reserve_copy_destination(index: CopyIndex, storage: dict, path: str) -> None:
     """Require a single writer for each exported object."""
     key = json.dumps([storage_id(storage), _key(path)])
-    if index.contains(key):
+    if index.put_if_absent(key, b"") is not None:
         raise ClickhouseBackupError(f'Multiple export objects map to "{path}"')
-    index.put(key, b"")
 
 
 def _validate_relative_key(key: str) -> None:

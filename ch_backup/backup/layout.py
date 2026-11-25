@@ -1495,21 +1495,22 @@ class BackupLayout:
         if desired_tables == "all":
             return existing_paths
 
-        remote_paths = {
-            _disk_metadata_path(
-                backup_path,
-                table.database,
-                table.name,
-                source_disk_name,
-                compression,
+        available = set(existing_paths)
+        needed_paths = set()
+        for table in desired_tables:
+            path = _disk_metadata_path(
+                backup_path, table.database, table.name, source_disk_name, compression
             )
-            for table in desired_tables
-        }
-        needed_paths = remote_paths.intersection(existing_paths)
-        missing_paths = remote_paths.difference(existing_paths)
-        for path in missing_paths:
-            logging.warning(f"Missing path {path} on remote")
-
+            if path not in available:
+                suffix = path.removeprefix(disk_path + "/")
+                legacy_path = os.path.join(
+                    disk_path, suffix.replace("%2D", "-").replace("%2E", ".")
+                )
+                if legacy_path not in available:
+                    logging.warning(f"Missing path {path} on remote")
+                    continue
+                path = legacy_path
+            needed_paths.add(path)
         return list(needed_paths)
 
     def get_legacy_disk_metadata_path(
