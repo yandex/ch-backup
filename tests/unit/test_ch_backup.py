@@ -6,6 +6,7 @@ ClickhouseBackup unit tests.
 
 from collections import defaultdict
 from contextlib import AbstractContextManager, nullcontext
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Sequence, cast
 from unittest.mock import MagicMock, Mock, patch
@@ -24,6 +25,7 @@ from ch_backup.backup.metadata import (
     PartMetadata,
     TableMetadata,
 )
+from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageSource
 from ch_backup.backup.sources import BackupSources
 from ch_backup.ch_backup import (
     CleanZooKeeperMode,
@@ -1081,7 +1083,8 @@ def test_delete_with_unreadable_full_metadata_and_references_fails() -> None:
 
 
 def _backup_metadata(
-    copied_from: dict | None = None, cloud_storage_source: dict | None = None
+    copied_from: dict | None = None,
+    cloud_storage_source: CloudStorageSource | None = None,
 ) -> BackupMetadata:
     meta = BackupMetadata(
         name="backup1",
@@ -1136,9 +1139,9 @@ def test_delete_unfreezes_only_own_backups(
         pytest.param(
             {},
             {
-                "cloud_storage_source_bucket": "disk-copy",
-                "cloud_storage_source_path": "copies/backup1",
-                "cloud_storage_source_endpoint": "http://s3.test:9000",
+                "cloud_storage_source_bucket": None,
+                "cloud_storage_source_path": None,
+                "cloud_storage_source_endpoint": None,
             },
             id="location from metadata",
         ),
@@ -1157,7 +1160,9 @@ def test_delete_unfreezes_only_own_backups(
     ],
 )
 # pylint: disable=protected-access
-def test_restore_cloud_storage_location(cli_options: dict, expected: dict) -> None:
+def test_restore_keeps_explicit_location_separate_from_metadata(
+    cli_options: dict, expected: dict
+) -> None:
     meta = _backup_metadata(
         cloud_storage_source={
             "endpoint_url": "http://s3.test:9000",
@@ -1217,10 +1222,14 @@ def test_restore_keeps_stored_endpoint_scheme(
             BackupSources(), "backup1", [], [], cloud_storage_source_endpoint=override
         )
     options = restore.call_args.kwargs
+    config = deepcopy(DEFAULT_CONFIG)
+    config["storage"]["credentials"][
+        "endpoint_url"
+    ] = f"{stored_scheme}://copied.example:8443"
     disks = ClickHouseTemporaryDisks(
         MagicMock(),
         MagicMock(),
-        DEFAULT_CONFIG,  # type: ignore[arg-type]
+        config,  # type: ignore[arg-type]
         meta,
         options["cloud_storage_source_bucket"],
         options["cloud_storage_source_path"],

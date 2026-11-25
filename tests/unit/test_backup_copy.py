@@ -27,7 +27,10 @@ from ch_backup.backup.metadata import (
     BackupState,
     DetachedPartMetadata,
 )
-from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageBackup
+from ch_backup.backup.metadata.cloud_storage_metadata import (
+    CloudStorageBackup,
+    CloudStorageSource,
+)
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.encryption import (
     get_cloud_storage_data_encryption_metadata,
@@ -1234,7 +1237,7 @@ def test_cloud_source_overrides_are_independent(
     version: int, virtual_host: bool, stored_source: bool, overrides: dict
 ) -> None:
     ctx = _cloud_storage_context()
-    base = {
+    base: CloudStorageSource = {
         "endpoint_url": "http://minio:9000",
         "bucket": "cloud-storage",
         "path": "data",
@@ -3693,7 +3696,7 @@ def test_cloud_retry_retains_original_source(publication_failure: bool) -> None:
     """Keep the original cloud source until publication, including failed publication retries."""
     ctx = _scoped_context(version=5)
     ctx.target_config["copy"]["cloud_storage"]["encrypt_data"] = True
-    source = {
+    source: CloudStorageSource = {
         "endpoint_url": "http://minio:9000",
         "bucket": "cloud-storage",
         "path": "data",

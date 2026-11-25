@@ -540,7 +540,13 @@ Behavior and limitations:
   Restore of the copy uses the copied objects by default; they must be accessible with credentials of the
   object storage disk of the host where the backup is restored. Note that these objects are not removed
   when the copy is deleted, and they're stored for each copied backup separately.
-  Restore preserves the HTTP/HTTPS scheme of the stored endpoint. Its `--cloud-storage-source-endpoint`
+  A recorded endpoint could direct configured credentials to another service. Restore therefore accepts it
+  only when its origin matches a configured disk or backup-storage endpoint, or an explicit
+  `--cloud-storage-source-endpoint` override. A null endpoint selects the AWS default.
+  Treating it as an omitted override would incorrectly return to the original disk endpoint.
+  In-place restore would leave live tables using backup-owned objects. Later backup cleanup could delete
+  those objects, so copied cloud data requires ordinary restore.
+  Restore preserves the HTTP/HTTPS scheme of the selected endpoint. Its `--cloud-storage-source-endpoint`
   option accepts a full HTTP(S) URL or `host[:port]`; the latter uses the original disk's scheme.
 - ClickHouse 26.8+ SQL-defined HTTP handlers are included in full backups; use `--http-handlers` with backup
   or restore handlers only.

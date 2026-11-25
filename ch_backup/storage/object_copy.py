@@ -11,6 +11,9 @@ from urllib.parse import urlparse
 from ch_backup.exceptions import ConfigurationError
 
 
+DEFAULT_S3_ENDPOINT = "https://s3.amazonaws.com"
+
+
 class ServerSideCopyMode(str, Enum):
     """Policy for server-side copying and fallback through ch-backup."""
 
@@ -60,6 +63,11 @@ def storage_id(storage: dict) -> tuple:
     """
     credentials = storage["credentials"]
     return storage["type"], credentials["endpoint_url"], credentials["bucket"]
+
+
+def normalize_s3_endpoint(endpoint: str | None) -> str:
+    """Resolve the default S3 endpoint and ignore a trailing slash."""
+    return (endpoint or DEFAULT_S3_ENDPOINT).rstrip("/")
 
 
 def server_side_copy_possible(src_storage: dict, dst_storage: dict) -> bool:
