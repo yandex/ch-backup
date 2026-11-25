@@ -1,6 +1,10 @@
 """Unit tests for restoring detached ClickHouse data parts."""
 
+from contextlib import AbstractContextManager, nullcontext
 from functools import partial
+from hashlib import md5
+from pathlib import Path
+from tarfile import BLOCKSIZE
 from typing import Any, Callable
 from unittest.mock import MagicMock, patch
 
@@ -189,3 +193,70 @@ def test_keep_going_skips_failed_download_and_restores_next_part() -> None:
     promote.assert_called_once()
     assert promote.call_args.args[1].name == successful.name
     context.ch_ctl.attach_part.assert_not_called()
+
+
+@pytest.fixture(name="detached_candidate")
+def fixture_detached_candidate(tmp_path: Path) -> tuple[Path, DetachedPartMetadata]:
+    part_path = tmp_path / "broken_all_1_1_0"
+    part_path.mkdir()
+    (part_path / "checksums.txt").write_bytes(b"checksums")
+    return part_path, DetachedPartMetadata(
+        "db",
+        "table",
+        part_path.name,
+        "broken",
+        md5(b"checksums").hexdigest(),  # nosec
+        BLOCKSIZE,
+        ["checksums.txt"],
+        True,
+        "default",
+    )
+
+
+def test_detached_match_rejects_missing_directory(detached_candidate):
+    """A vanished directory must not be accepted as an already restored part."""
+    part_path, part = detached_candidate
+    assert ClickhouseCTL.detached_part_matches(part, str(part_path))
+    (part_path / "checksums.txt").unlink()
+    part_path.rmdir()
+
+    assert not ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+
+@pytest.mark.parametrize(
+    "operation,error",
+    [
+        ("scan_dir_files", OSError),
+        ("calc_aligned_files_size", OSError),
+        ("_get_part_checksum", OSError),
+        ("_get_part_checksum", ValueError),
+    ],
+)
+def test_detached_match_handles_validation_errors(detached_candidate, operation, error):
+    """
+    Unreadable files cannot authorize reuse. Other validation errors must
+    propagate instead of being hidden as ordinary filesystem misses.
+    """
+    part_path, part = detached_candidate
+    expected_error: AbstractContextManager = nullcontext()
+    if error is ValueError:
+        expected_error = pytest.raises(ValueError)
+    with (
+        patch(f"ch_backup.clickhouse.control.{operation}", side_effect=error()),
+        expected_error,
+    ):
+        assert not ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+
+@pytest.mark.parametrize(
+    "field,value", [("files", ["missing.bin"]), ("size", 2 * BLOCKSIZE)]
+)
+def test_detached_match_rejects_names_or_aligned_size(detached_candidate, field, value):
+    """
+    Equal checksum-file contents alone do not prove that a detached directory
+    contains the expected files. A different file list or stored size makes the
+    candidate unsafe to reuse.
+    """
+    path, part = detached_candidate
+    setattr(part.raw_metadata, field, value)
+    assert not ClickhouseCTL.detached_part_matches(part, str(path))

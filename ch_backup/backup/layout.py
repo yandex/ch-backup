@@ -1172,7 +1172,7 @@ class BackupLayout:
         """
         Download a whole part, reporting success only after every file is written.
         """
-        source_part_name = part.deduplicated_part_name
+        stored_part = part.resolve_stored_reference(backup_meta.name)
         pending = 1 if part.tarball else len(part.files)
         failed = False
 
@@ -1192,7 +1192,7 @@ class BackupLayout:
         logging.debug(
             'Downloading data part {} (stored as {}) of "{}"."{}"',
             part.name,
-            source_part_name,
+            stored_part.name,
             part.database,
             part.table,
         )
@@ -1202,19 +1202,17 @@ class BackupLayout:
                 _validate_part_file_paths(fs_part_path, part.files)
             os.makedirs(fs_part_path, exist_ok=True)
 
-            # part.link is the source backup name for deduplicated parts (or None).
-            source_backup_name = part.link or backup_meta.name
-            backup_path = self.get_backup_path(source_backup_name)
+            backup_path = self.get_backup_path(stored_part.owner)
             remote_dir_path = self._get_escaped_if_exists(
                 _part_path,
                 backup_path,
-                part.database,
-                part.table,
-                source_part_name,
+                stored_part.database,
+                stored_part.table,
+                stored_part.name,
             )
 
             if part.tarball:
-                remote_path = os.path.join(remote_dir_path, f"{source_part_name}.tar")
+                remote_path = os.path.join(remote_dir_path, f"{stored_part.name}.tar")
                 logging.debug("Downloading part tarball file: {}", remote_path)
                 self._storage_loader.download_files(
                     remote_path=remote_path,
@@ -1290,22 +1288,20 @@ class BackupLayout:
         """
         Check availability of part data in storage.
         """
-        source_part_name = part.deduplicated_part_name
+        stored_part = part.resolve_stored_reference(backup_name)
 
         try:
-            # part.link is the source backup name for deduplicated parts (or None).
-            source_backup_name = part.link or backup_name
-            resolved_backup_path = self.get_backup_path(source_backup_name)
+            resolved_backup_path = self.get_backup_path(stored_part.owner)
             remote_dir_path = self._get_escaped_if_exists(
                 _part_path,
                 resolved_backup_path,
-                part.database,
-                part.table,
-                source_part_name,
+                stored_part.database,
+                stored_part.table,
+                stored_part.name,
             )
             remote_files = self._storage_loader.list_dir(remote_dir_path)
             files = dict.fromkeys(remote_files, 0)
-            tar_name = f"{source_part_name}.tar"
+            tar_name = f"{stored_part.name}.tar"
             if part.tarball and tar_name in files:
                 files[tar_name] = self._storage_loader.get_file_size(
                     os.path.join(remote_dir_path, tar_name)
@@ -1870,14 +1866,13 @@ class BackupLayout:
         """
         Return remote paths of data part files.
         """
-        # part.link is the source backup name for deduplicated parts (or None).
-        source_backup_name = part.link or backup_name
+        stored_part = part.resolve_stored_reference(backup_name)
         part_path = self._get_escaped_if_exists(
             _part_path,
-            self.get_backup_path(source_backup_name),
-            part.database,
-            part.table,
-            part.deduplicated_part_name,
+            self.get_backup_path(stored_part.owner),
+            stored_part.database,
+            stored_part.table,
+            stored_part.name,
         )
         return [os.path.join(part_path, f) for f in get_data_part_file_names(part)]
 
@@ -2078,9 +2073,7 @@ def get_data_part_relative_dirs(part: PartMetadata) -> list[str]:
     return [
         _part_path(
             "",
-            part.database,
-            part.table,
-            part.deduplicated_part_name,
+            *part.stored_identity,
             escape_names=escape_names,
         )
         for escape_names in (True, False)

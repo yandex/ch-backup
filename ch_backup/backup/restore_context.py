@@ -71,24 +71,26 @@ class RestoreContext:
         self._load_state()
         return self._databases_dict
 
-    def _part(self, part: PartMetadata) -> PartState:
-        return self._databases[part.database][part.table][part.name]
+    def _part_state(self, logical_identity: tuple[str, str, str]) -> PartState:
+        database_name, table_name, part_name = logical_identity
+        return self._databases[database_name][table_name][part_name]
 
     @_dump_state_if_need
     def change_part_state(self, state: PartState, part: PartMetadata) -> None:
         """
         Changes the state of the restoring part.
         """
-        self._databases[part.database][part.table][part.name] = state
+        database_name, table_name, part_name = part.logical_identity
+        self._databases[database_name][table_name][part_name] = state
         if state == PartState.RESTORED:
-            tables = self._failed.get(part.database, {})
-            errors = tables.get(part.table)
+            tables = self._failed.get(database_name, {})
+            errors = tables.get(table_name)
             if errors is not None:
-                errors["failed_parts"].pop(part.name, None)
+                errors["failed_parts"].pop(part_name, None)
                 if not errors["failed_parts"] and not errors["failed_paths"]:
-                    del tables[part.table]
+                    del tables[table_name]
                     if not tables:
-                        del self._failed[part.database]
+                        del self._failed[database_name]
 
     @_dump_state_if_need
     def add_failed_chown(self, database: str, table: str, path: str) -> None:
@@ -103,7 +105,8 @@ class RestoreContext:
         """
         Save information about failed to restore part in context
         """
-        self._failed[part.database][part.table]["failed_parts"][part.name] = repr(e)
+        database_name, table_name, part_name = part.logical_identity
+        self._failed[database_name][table_name]["failed_parts"][part_name] = repr(e)
         self._has_failed_parts = True
 
     def has_failed_parts(self) -> bool:
@@ -116,13 +119,13 @@ class RestoreContext:
         """
         Checks if data part was downloaded.
         """
-        return self._part(part) == PartState.DOWNLOADED
+        return self._part_state(part.logical_identity) == PartState.DOWNLOADED
 
     def part_restored(self, part: PartMetadata) -> bool:
         """
         Checks if data part was restored.
         """
-        return self._part(part) == PartState.RESTORED
+        return self._part_state(part.logical_identity) == PartState.RESTORED
 
     def dump_state(self) -> None:
         """

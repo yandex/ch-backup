@@ -3,7 +3,7 @@ Backup metadata for ClickHouse data part.
 """
 
 import os
-from typing import Sequence
+from typing import NamedTuple, Sequence
 
 from ch_backup.clickhouse.models import FrozenPart
 from ch_backup.util import Slotted
@@ -68,6 +68,15 @@ class RawMetadata(Slotted):
         self.encrypted = encrypted
 
 
+class StoredPart(NamedTuple):
+    """Address of the files for a part, including its owning backup."""
+
+    owner: str
+    database: str
+    table: str
+    name: str
+
+
 class PartMetadata(Slotted):
     """
     Backup metadata for ClickHouse data part.
@@ -96,6 +105,32 @@ class PartMetadata(Slotted):
         self.raw_metadata: RawMetadata = RawMetadata(
             checksum, size, files, tarball, link, link_part_name, disk_name, encrypted
         )
+
+    @property
+    def logical_identity(self) -> tuple[str, str, str]:
+        """Return database, table, and requested part name for restore progress.
+
+        Changing the owner or stored name does not change this identity.
+        """
+        return self.database, self.table, self.name
+
+    @property
+    def stored_identity(self) -> tuple[str, str, str]:
+        """Return database, table, and the name used for stored files.
+
+        Use link_part_name when present, otherwise the requested name.
+        This fallback is independent of which backup owns the files.
+        """
+        return self.database, self.table, self.deduplicated_part_name
+
+    def resolve_stored_reference(self, containing_backup_name: str) -> StoredPart:
+        """Resolve the address of the stored files.
+
+        Use link when present, otherwise containing_backup_name. Owner selection
+        does not change the stored-name fallback. File access and retention need
+        this address because a mutation can rename the requested part alone.
+        """
+        return StoredPart(self.link or containing_backup_name, *self.stored_identity)
 
     @property
     def checksum(self) -> str:

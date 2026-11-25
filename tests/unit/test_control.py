@@ -883,7 +883,11 @@ def test_detached_part_matches_local_backup_metadata(tmp_path: Path) -> None:
     assert not ClickhouseCTL.detached_part_matches(part, str(part_path))
 
     part.raw_metadata.checksum = ""
-    assert ClickhouseCTL.detached_part_matches(part, str(part_path))
+    with mock.patch(
+        "ch_backup.clickhouse.control._get_part_checksum",
+        side_effect=AssertionError("No checksum is required"),
+    ):
+        assert ClickhouseCTL.detached_part_matches(part, str(part_path))
 
 
 def test_detached_part_matches_object_storage_metadata(tmp_path: Path) -> None:
@@ -908,6 +912,13 @@ def test_detached_part_matches_object_storage_metadata(tmp_path: Path) -> None:
         "5\n1\t370\n370\tstore/other-key\n0\n0\n", encoding="utf-8"
     )
     assert not ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+    part.raw_metadata.checksum = ""
+    with mock.patch(
+        "ch_backup.clickhouse.control._get_cloud_part_checksum_and_size",
+        side_effect=AssertionError("No checksum is required"),
+    ):
+        assert ClickhouseCTL.detached_part_matches(part, str(part_path))
 
 
 def test_detached_path_is_direct_child_on_table_disk_with_same_storage_path(
