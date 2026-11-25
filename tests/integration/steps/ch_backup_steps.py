@@ -117,6 +117,11 @@ def step_set_backup_file(context, path, node, backup_id):
     ch_backup.set_backup_file_data(backup_id, path, data=context.text.strip().encode())
 
 
+@given('file "{path}" in {node:w} backup #{backup_id:d} is corrupted keeping its size')
+def step_corrupt_backup_file(context, path, node, backup_id):
+    BackupManager(context, node).corrupt_backup_file(backup_id, path)
+
+
 @when('we save and truncate file "{path}" in {node:w} backup #{backup_id:d}')
 def step_save_truncated_backup_file(context, path, node, backup_id):
     manager = BackupManager(context, node)

@@ -129,12 +129,21 @@ class PipeLineCompatibleStorageEngine(StorageEngine):
         """
         pass
 
-    @abstractmethod
     def list_dir_with_sizes(self, remote_path: str) -> dict[str, int]:
-        """
-        Return sizes of all objects under the remote path (recursively) keyed by object key.
-        """
-        pass
+        """Collect recursive object sizes through the shared page API."""
+        result: dict[str, int] = {}
+        continuation = None
+        while True:
+            entries, continuation = self.read_listing_page(remote_path, continuation)
+            result.update(entries)
+            if continuation is None:
+                return result
+
+    @abstractmethod
+    def read_listing_page(
+        self, remote_path: str, continuation: str | None = None
+    ) -> tuple[list[tuple[str, int]], str | None]:
+        """Read one recursive listing page; None starts and marks completion."""
 
     @abstractmethod
     def copy_object(

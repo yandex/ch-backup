@@ -16,7 +16,7 @@ from functools import wraps
 from pathlib import Path as PathlibPath
 from typing import Any, Iterable
 
-from click import Choice, Path, argument, pass_context, style
+from click import Choice, ClickException, Path, argument, pass_context, style
 from cloup import (
     Color,
     Context,
@@ -27,12 +27,17 @@ from cloup import (
     option,
     option_group,
 )
-from cloup.constraints import constraint, mutually_exclusive
+from cloup.constraints import constraint, mutually_exclusive, require_one
 from humanfriendly import format_timespan
 from tabulate import tabulate
 
 from ch_backup.command_context import command_context
-from ch_backup.exceptions import ConfigurationError, TerminatingSignal
+from ch_backup.exceptions import (
+    BackupCheckError,
+    BackupNotFound,
+    ConfigurationError,
+    TerminatingSignal,
+)
 
 from . import logging
 from .backup.copy_deduplication import copy_deduplication_cutoff
@@ -230,10 +235,7 @@ def _mask_command_params(params: dict[str, Any]) -> dict[str, Any]:
     result = {}
     for name, value in params.items():
         if name in {"config_parameters", "target_config_parameters"}:
-            result[name] = [
-                (path, _mask_value(parameter_value, path))
-                for path, parameter_value in value
-            ]
+            result[name] = [(path, _HIDDEN) for path, _ in value]
         else:
             result[name] = _mask_value(value, name)
     return result
@@ -289,15 +291,18 @@ def list_command(
     """List existing backups."""
     if include_unreadable and not verbose:
         _ctx.fail("--include-unreadable requires --verbose")
-    state = None if all_ else BackupState.CREATED
-
     unreadable: dict[str, str] = {}
-    backups = ch_backup.list(state, unreadable=unreadable)
+    pending: dict[str, dict] = {}
+    backups = ch_backup.list(
+        None if all_ else BackupState.CREATED,
+        unreadable=unreadable,
+        pending=pending if all_ else None,
+    )
     if not (all_ or include_unreadable):
         unreadable.clear()
 
     if not verbose:
-        print("\n".join([b.name for b in backups]))
+        print("\n".join([b.name for b in backups] + sorted(pending)))
         return
 
     records = []
@@ -337,6 +342,25 @@ def list_command(
             record["metadata_error"] = None
         records.append(record)
 
+    for name, marker in sorted(pending.items()):
+        record = {
+            key: None
+            for key in (
+                records[0]
+                if records
+                else ("name", "state", "start_time", "end_time", "size", "real_size")
+            )
+        }
+        record.update(
+            name=name,
+            state=marker["state"],
+            delete_pending=(
+                marker
+                if format_ == "json"
+                else "\n".join(marker["referenced_by"] or [])
+            ),
+        )
+        records.append(record)
     for name, error in sorted(unreadable.items()):
         record = dict.fromkeys(
             (
@@ -939,8 +963,33 @@ def fix_admin_user_command(
     ch_backup.fix_admin_user(dry_run=dryrun)
 
 
+@command(name="adopt-cloud-storage")
+@argument("name", metavar="BACKUP")
+@option(
+    "--confirm-owner",
+    is_flag=True,
+    required=True,
+    help="Confirm that the entire sanitized cloud prefix belongs exclusively to BACKUP, including historical objects.",
+)
+def adopt_cloud_storage_command(
+    ctx: Context, ch_backup: ClickhouseBackup, name: str, confirm_owner: bool
+) -> None:
+    """Record explicitly confirmed ownership of legacy cloud data."""
+    if not confirm_owner:
+        ctx.fail(
+            "--confirm-owner is required; ownership cannot be inferred from object names"
+        )
+    ch_backup.adopt_cloud_storage(name)
+    print(name)
+
+
 @command(name="delete")  # type: ignore
 @argument("name", metavar="BACKUP")
+@option(
+    "--delete-unreadable",
+    is_flag=True,
+    help="Devalue backups without readable metadata; keep referenced data and retry via deletion markers.",
+)
 @option(
     "--purge-partial",
     is_flag=True,
@@ -955,24 +1004,29 @@ def fix_admin_user_command(
     help="Do nothing if backup does not exist",
 )
 def delete_command(
-    ctx: Context,
+    _ctx: Context,
     ch_backup: ClickhouseBackup,
     name: str,
     purge_partial: bool,
     force: bool,
+    *,
+    delete_unreadable: bool = False,
 ) -> None:
     """Delete particular backup."""
     try:
-        name = _validate_and_resolve_name(ctx, ch_backup, name)
-    except Exception:
+        if delete_unreadable:
+            deleted_backup_name, msg = ch_backup.delete(
+                name, purge_partial, delete_unreadable=True
+            )
+        else:
+            deleted_backup_name, msg = ch_backup.delete(name, purge_partial)
+    except BackupNotFound:
         if force:
             logging.info(
                 f"Attempt to delete a non-existent backup '{name}' was skipped"
             )
             return
         raise
-
-    deleted_backup_name, msg = ch_backup.delete(name, purge_partial)
 
     if msg:
         print(msg, file=sys.stderr, flush=True)
@@ -1151,10 +1205,108 @@ def copy_command(
         print_copy_report(report, report_path)
 
 
+@command(name="check")  # type: ignore
+@argument("names", metavar="[BACKUP]...", nargs=-1)
+@option(
+    "-a",
+    "--all",
+    "all_",
+    is_flag=True,
+    default=False,
+    help="Check all backups.",
+)
+@option(
+    "--deep",
+    is_flag=True,
+    default=False,
+    help="Download data of parts and verify it as restore does. "
+    "Without it, only presence and size of data are checked.",
+)
+@option("--workers", type=int, default=4, help="Number of objects checked in parallel.")
+@option(
+    "--tmp-dir",
+    type=Path(exists=True, file_okay=False),
+    help="Directory for parts downloaded by deep check.",
+)
+@option(
+    "--format",
+    "format_",
+    type=Choice(["table", "json"]),
+    default="table",
+    help='Output format. The default is "table" format.',
+)
+@constraint(require_one, ["names", "all_"])
+# pylint: disable=too-many-arguments,too-many-positional-arguments
+def check_command(
+    ctx: Context,
+    ch_backup: ClickhouseBackup,
+    names: tuple[str, ...],
+    all_: bool,
+    deep: bool,
+    workers: int,
+    tmp_dir: str | None,
+    format_: str,
+) -> None:
+    """
+    Check that backups are readable and their data is in place.
+
+    Exit with code 1 if an operational error prevents the check from finishing.
+    Exit with code 2 if any broken backup is in the state "created" or its state is unknown.
+    """
+    try:
+        results = ch_backup.check(
+            None if all_ else list(names), deep=deep, workers=workers, tmp_dir=tmp_dir
+        )
+    except BackupCheckError as error:
+        raise ClickException(str(error)) from None
+
+    records = [
+        {
+            "name": result.name,
+            "state": result.state,
+            "status": (
+                ("broken" if result.broken else "ok") if result.checked else "skipped"
+            ),
+            "unverified": result.unverified,
+            "skipped_data": (
+                result.skipped_data
+                if format_ == "json"
+                else "\n".join(result.skipped_data)
+            ),
+            "problems": (
+                result.problems if format_ == "json" else "\n".join(result.problems)
+            ),
+        }
+        for result in results
+    ]
+    if format_ == "json":
+        json.dump(records, sys.stdout, indent=2)
+        print()
+    else:
+        print(tabulate(records, headers="keys"))
+
+    if any(
+        result.broken and result.state in (BackupState.CREATED.value, None)
+        for result in results
+    ):
+        ctx.exit(2)
+
+
 @command(name="purge")
-def purge_command(_ctx: Context, ch_backup: ClickhouseBackup) -> None:
+@option(
+    "--delete-unreadable",
+    is_flag=True,
+    help="Devalue backups without readable metadata under retention; preserve referenced data.",
+)
+def purge_command(
+    _ctx: Context, ch_backup: ClickhouseBackup, delete_unreadable: bool = False
+) -> None:
     """Purge outdated backups."""
-    names, msg = ch_backup.purge()
+    names, msg = (
+        ch_backup.purge(delete_unreadable=True)
+        if delete_unreadable
+        else ch_backup.purge()
+    )
 
     if msg:
         print(msg, file=sys.stderr, flush=True)

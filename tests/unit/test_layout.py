@@ -5,10 +5,13 @@ import os
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from pathlib import Path
 from threading import Barrier, Event
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+from click import Group
+from click.testing import CliRunner
 
 from ch_backup.backup.layout import BackupLayout, read_metadata_in_batches
 from ch_backup.backup.metadata import (
@@ -20,10 +23,11 @@ from ch_backup.backup.metadata import (
 )
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.ch_backup import ClickhouseBackup
+from ch_backup.cli import delete_command
 from ch_backup.clickhouse.models import Disk, Table
 from ch_backup.command_context import command_context, get_current_command
 from ch_backup.config import DEFAULT_CONFIG
-from ch_backup.exceptions import StorageError
+from ch_backup.exceptions import ClickhouseBackupError, StorageError
 from ch_backup.storage.async_pipeline import pipeline_executor
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.storage.engine.s3 import S3RetryingError
@@ -35,7 +39,9 @@ def make_layout() -> BackupLayout:
     config["backup"]["path_root"] = "ch_backup"
     with patch("ch_backup.backup.layout.StorageLoader"):
         layout = BackupLayout(config)  # type: ignore[arg-type]
-    setattr(layout, "_storage_loader", MagicMock())
+    storage = MagicMock()
+    storage.path_exists.return_value = False
+    setattr(layout, "_storage_loader", storage)
     return layout
 
 
@@ -241,7 +247,9 @@ def test_list_sorts_backups_by_instant_across_timezone_offsets(use_light_meta):
         backup.start_time = datetime.fromisoformat(timestamp)
         metadata.append(backup.dump_json(light=use_light_meta))
     storage.list_dir.return_value = list(timestamps)
-    storage.path_exists.return_value = True
+    storage.path_exists.side_effect = lambda path: not path.endswith(
+        "delete_pending.json"
+    )
     storage.download_data.side_effect = metadata
 
     backups = layout.get_backups(use_light_meta=use_light_meta)
@@ -259,6 +267,8 @@ def test_list_collects_read_errors_only_when_requested(operation):
     error = S3RetryingError("\n\nInternalError\nTraceback details")
 
     def path_exists(path):
+        if path.endswith("delete_pending.json"):
+            return False
         if "/broken/" in path and operation == "head":
             raise error
         return "/missing/" not in path
@@ -374,10 +384,13 @@ class TestCloudStorageMetadataUpload:
     def _make_layout() -> tuple[BackupLayout, MagicMock]:
         """Helper: build a BackupLayout and expose its storage loader."""
         layout = make_layout()
+        getattr(layout, "_storage_loader").path_exists.return_value = False
+        getattr(layout, "_storage_loader").list_dir.return_value = []
         return layout, layout._storage_loader  # type: ignore[return-value]
 
     def _make_backup_meta(self) -> MagicMock:
         backup_meta = MagicMock()
+        backup_meta.name = self._BACKUP_NAME
         backup_meta.get_sanitized_name.return_value = self._BACKUP_NAME
         backup_meta.cloud_storage.compressed = False
         backup_meta.cloud_storage.encrypted = False
@@ -511,6 +524,7 @@ class TestCloudStorageDataDeletion:
     def _make_layout() -> tuple[BackupLayout, MagicMock]:
         """Helper: build a BackupLayout that records paths passed for deletion."""
         layout = make_layout()
+        setattr(layout, "cloud_storage_owned", MagicMock(return_value=True))
         layout._storage_loader.list_dir.side_effect = lambda path, **_kwargs: [  # type: ignore[attr-defined]
             f"{path}/object"
         ]
@@ -553,11 +567,9 @@ class TestCloudStorageDataDeletion:
         delete_files = MagicMock()
         setattr(layout, "_delete_files", delete_files)
 
-        layout.delete_backup("my-backup", MagicMock())
-
-        assert delete_files.call_args.args[0] == [
-            "ch_backup/my_backup/disks/s3/db/table.tar",
-        ]
+        with pytest.raises(StorageError, match="not owned"):
+            layout.delete_backup("my-backup", MagicMock())
+        delete_files.assert_not_called()
 
     def test_delete_backup_without_dashes_deletes_the_path_once(self):
         """
@@ -589,11 +601,16 @@ def test_prefix_delete_keeps_light_metadata_until_retry_succeeds() -> None:
     layout._config = {"path_root": "backups"}  # pylint: disable=protected-access
     layout._storage_loader = MagicMock()  # pylint: disable=protected-access
     storage = layout._storage_loader  # pylint: disable=protected-access
-    storage.list_dir.return_value = [
-        "backups/old/data.tar",
-        "backups/old/backup_struct.json",
-        "backups/old/backup_light_struct.json",
-    ]
+    storage.path_exists.return_value = False
+    storage.list_dir.side_effect = lambda path, **_: (
+        [
+            "backups/old/data.tar",
+            "backups/old/backup_struct.json",
+            "backups/old/backup_light_struct.json",
+        ]
+        if path == "backups/old"
+        else []
+    )
     storage.wait.side_effect = [RuntimeError("async deletion failed"), None]
     unfreeze = MagicMock()
 
@@ -706,3 +723,134 @@ class TestTableDataFiles:
         storage.get_file_size.assert_called_once_with(
             "ch_backup/b1/data/db1/t1/all_1_1_0/all_1_1_0.tar"
         )
+
+
+@pytest.fixture(name="fallback_context")
+def fallback_context_fixture():
+    """Keep two real manifests and their payload keys behind a fake storage boundary."""
+    layout = make_layout()
+    storage = MagicMock()
+    setattr(layout, "_storage_loader", storage)
+    objects = {}
+    for name, day in (("old", 1), ("new", 2)):
+        meta = BackupMetadata(name, "2", "26.6", "%Y-%m-%d")
+        meta.state = BackupState.CREATED
+        meta.start_time = datetime(2026, 11, day)
+        raw = meta.dump()
+        raw["databases"] = {
+            "db": {
+                "tables": {
+                    "table": {
+                        "engine": "MergeTree",
+                        "uuid": None,
+                        "parts": {
+                            part: {
+                                "checksum": "x",
+                                "bytes": 1,
+                                "files": ["data.bin"],
+                                "link": "old" if name == "new" else None,
+                            }
+                            for part in (
+                                ["all_1_1_0", "all_2_2_0"]
+                                if name == "old"
+                                else ["all_1_1_0"]
+                            )
+                        },
+                    }
+                }
+            }
+        }
+        meta = BackupMetadata.load(raw)
+        objects[f"ch_backup/{name}/backup_struct.json"] = meta.dump_json()
+        objects[f"ch_backup/{name}/backup_light_struct.json"] = meta.dump_json(
+            light=True
+        )
+    for part in ("all_1_1_0", "all_2_2_0"):
+        objects[f"ch_backup/old/data/db/table/{part}/data.bin"] = "payload"
+    storage.list_dir.return_value = ["new", "old"]
+    storage.path_exists.side_effect = lambda path, **_: path in objects
+    storage.download_data.side_effect = lambda path, **_: objects[path]
+    storage.upload_data.side_effect = lambda data, remote_path, **_: objects.update(
+        {remote_path: data}
+    )
+    storage.upload_file.side_effect = (
+        lambda local_path, remote_path, **_: objects.update(
+            {remote_path: Path(local_path).read_bytes()}
+        )
+    )
+    backup = ClickhouseBackup.__new__(ClickhouseBackup)
+    context = MagicMock(backup_layout=layout)
+    context.config = {"retain_count": 1, "retain_time": {}}
+    backup.__dict__["_context"] = context
+    return backup, layout, storage, objects
+
+
+@pytest.mark.parametrize("operation", ["delete", "purge", "cli"])
+@pytest.mark.parametrize("damaged", ["old", "new"])
+@pytest.mark.parametrize("missing", [True, False])
+def test_full_fallback_preserves_shared_parts_and_rewrites_target_light(
+    fallback_context, operation, damaged, missing
+):
+    """Missing or corrupt light must not hide references or prevent partial deletion."""
+    backup, layout, storage, objects = fallback_context
+    path = f"ch_backup/{damaged}/backup_light_struct.json"
+    if missing:
+        del objects[path]
+    else:
+        objects[path] = "{invalid"
+    listed = layout.get_backups(use_light_meta=True)
+    assert [meta.name for meta in listed] == ["new", "old"]
+    assert all(not meta.get_databases() for meta in listed)
+    storage.upload_data.assert_not_called()
+    storage.upload_file.assert_not_called()
+    if operation == "delete":
+        backup.delete("old", False)
+    elif operation == "purge":
+        backup.purge()
+    else:
+        result = CliRunner().invoke(
+            Group(commands=[delete_command]), ["delete", "old"], obj={"backup": backup}
+        )
+        assert result.exit_code == 0, result.output
+    deleted = [
+        key
+        for call in storage.delete_files.call_args_list
+        for key in call.kwargs.get("remote_paths", call.args[0] if call.args else [])
+    ]
+    assert deleted == ["ch_backup/old/data/db/table/all_2_2_0/data.bin"]
+    light = BackupMetadata.load_json(objects["ch_backup/old/backup_light_struct.json"])
+    full = BackupMetadata.load_json(objects["ch_backup/old/backup_struct.json"])
+    assert light.state == full.state == BackupState.PARTIALLY_DELETED
+    assert [part.name for part in full.get_tables()[0].get_parts()] == ["all_1_1_0"]
+    assert light.dump(light=True) == full.dump(light=True)
+
+
+@pytest.mark.parametrize("damaged", ["old", "new"])
+@pytest.mark.parametrize("missing", [True, False])
+def test_unreadable_full_still_blocks_deletion_with_references(
+    fallback_context, damaged, missing
+):
+    """A referenced target or retained backup without full metadata blocks deletion."""
+    backup, _, storage, objects = fallback_context
+    path = f"ch_backup/{damaged}/backup_struct.json"
+    if missing:
+        del objects[path]
+    else:
+        objects[path] = "{}"
+    with pytest.raises(ClickhouseBackupError):
+        backup.delete("old", False)
+    storage.upload_data.assert_not_called()
+    storage.upload_file.assert_not_called()
+    storage.delete_files.assert_not_called()
+
+
+def test_broken_light_without_full_is_not_silently_skipped(fallback_context):
+    """A failed fallback keeps the existing unreadable-metadata guard."""
+    backup, _, storage, objects = fallback_context
+    objects["ch_backup/new/backup_light_struct.json"] = "{invalid"
+    del objects["ch_backup/new/backup_struct.json"]
+    with pytest.raises(StorageError, match="new"):
+        backup.delete("old", False)
+    storage.upload_data.assert_not_called()
+    storage.upload_file.assert_not_called()
+    storage.delete_files.assert_not_called()

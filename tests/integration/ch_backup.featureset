@@ -2,6 +2,7 @@ features/access_control_backup.feature
 features/access_control_replicated_backup.feature
 features/backup_copy.feature
 features/backup_delete.feature
+features/delete_pending.feature
 features/backup_multiple_disks.feature
 features/backup_multiple_disks_replicated.feature
 features/backup_purge.feature
@@ -36,3 +37,4 @@ features/unique_key.feature
 features/backup_unreadable_metadata.feature
 features/restore_from_replica.feature
 features/backup_keep_going.feature
+features/backup_check.feature

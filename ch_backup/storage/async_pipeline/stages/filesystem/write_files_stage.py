@@ -2,6 +2,9 @@
 Writing files from TAR stream stage.
 """
 
+import errno
+import os
+import stat
 from enum import Enum
 from pathlib import Path
 from tarfile import BLOCKSIZE, ENCODING, GNUTYPE_LONGNAME, NUL, TarInfo
@@ -145,14 +148,15 @@ class TarStreamProcessorBase(Handler):
         return True
 
     def on_done(self) -> Any:
+        tarinfo = self._tarinfo
         self._on_file_complete()
         # Early writers omitted all final padding if the last read filled a chunk.
         # Accept only a complete regular file with its entire padding outstanding.
         if (
             self._state == State.SKIP_BYTES
-            and self._tarinfo is not None
-            and self._tarinfo.isreg()
-            and self._bytes_to_process == -self._tarinfo.size % BLOCKSIZE
+            and tarinfo is not None
+            and tarinfo.isreg()
+            and self._bytes_to_process == -tarinfo.size % BLOCKSIZE
         ):
             return
         if (
@@ -180,9 +184,51 @@ class WriteFilesStage(TarStreamProcessorBase):
 
     def _on_file_start(self) -> None:
         assert self._tarinfo
-        filepath = self._dir / self._tarinfo.name
-        filepath.parent.mkdir(parents=True, exist_ok=True)
-        self._fobj = filepath.open("wb")
+        member = Path(self._tarinfo.name)
+        if (
+            not self._tarinfo.isreg()
+            or member.is_absolute()
+            or not member.parts
+            or ".." in member.parts
+        ):
+            raise ValueError("Invalid file in TAR archive")
+        self._dir.mkdir(parents=True, exist_ok=True)
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        parent = os.open(self._dir, directory_flags)
+        try:
+            for component in member.parts[:-1]:
+                try:
+                    child = os.open(component, directory_flags, dir_fd=parent)
+                except FileNotFoundError:
+                    try:
+                        os.mkdir(component, dir_fd=parent)
+                    except FileExistsError:
+                        pass
+                    child = os.open(component, directory_flags, dir_fd=parent)
+                os.close(parent)
+                parent = child
+            fd = os.open(
+                member.name,
+                os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+                0o666,
+                dir_fd=parent,
+            )
+        except OSError as error:
+            if error.errno in (errno.ENOTDIR, errno.EISDIR, errno.ELOOP):
+                raise ValueError("Conflicting TAR member path") from None
+            raise
+        finally:
+            os.close(parent)
+        stream = os.fdopen(fd, "wb")
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("Invalid TAR destination file")
+            stream.truncate()
+        except BaseException:
+            stream.close()
+            raise
+        self._fobj = stream
 
     def _write_data(self, data: bytes) -> None:
         assert self._fobj
@@ -194,15 +240,28 @@ class UnpackTarballStage(TarStreamProcessorBase):
     Unpack TAR stream to in-memory data pairs (filename, data).
     """
 
-    def __init__(self, config: dict, buffer_size: int) -> None:
+    def __init__(
+        self, config: dict, buffer_size: int, include_empty: bool = False
+    ) -> None:
+        """Collect completed files, optionally preserving empty metadata members."""
         super().__init__(config, buffer_size)
+        self._include_empty = include_empty
         self._current_data: bytearray = bytearray()
         self._results: list[tuple[str, bytes]] = []
 
     def _on_file_complete(self) -> None:
-        if self._current_data and self._tarinfo:
-            self._results.append((self._tarinfo.name, bytes(self._current_data)))
-            self._current_data = bytearray()
+        """Emit a completed member and clear its state."""
+        tarinfo = self._tarinfo
+        if tarinfo is None:
+            return
+        include_empty_file = (
+            self._include_empty and tarinfo.isfile() and tarinfo.size == 0
+        )
+        if not self._current_data and not include_empty_file:
+            return
+        self._results.append((tarinfo.name, bytes(self._current_data)))
+        self._current_data = bytearray()
+        self._tarinfo = None
 
     def _on_file_start(self) -> None:
         self._current_data = bytearray()
@@ -212,4 +271,9 @@ class UnpackTarballStage(TarStreamProcessorBase):
 
     def on_done(self) -> Iterator[tuple[str, bytes]]:
         super().on_done()
-        yield from self._results
+        yield from self.take_files()
+
+    def take_files(self) -> list[tuple[str, bytes]]:
+        """Release files completed by the last input chunk."""
+        files, self._results = self._results, []
+        return files

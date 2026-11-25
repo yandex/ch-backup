@@ -1,6 +1,9 @@
 FROM ubuntu:bionic
 
-RUN apt-get update -qq && apt-get -y install python3-bottle --no-install-recommends
+COPY --from=python:3-slim /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
+RUN sed -Ei 's#http://(archive|security)\.ubuntu\.com/ubuntu#https://mirror.yandex.ru/ubuntu#g' /etc/apt/sources.list && \
+    apt-get update -qq && apt-get -y install python3-bottle --no-install-recommends
 
 COPY staging/images/{{ instance_name }}/app.py /app.py
 

@@ -464,6 +464,12 @@ Feature: Copy backups to another storage
     path: ch_backup/broken/backup_light_struct.json
     data: invalid metadata
     """
+    And we put object in S3
+    """
+    bucket: ch-backup
+    path: ch_backup/broken/backup_struct.json
+    data: invalid metadata
+    """
     And we try to execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy --all --keep-going \
@@ -563,6 +569,12 @@ Feature: Copy backups to another storage
     """
     bucket: ch-backup-copy
     path: ch_backup/broken/backup_light_struct.json
+    data: invalid metadata
+    """
+    And we put object in S3
+    """
+    bucket: ch-backup-copy
+    path: ch_backup/broken/backup_struct.json
     data: invalid metadata
     """
     And we try to execute command on clickhouse01

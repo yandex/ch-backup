@@ -166,6 +166,7 @@ class JsonParamType(ParamType):
     name = "json"
 
     def convert(self, value, param, ctx):
+        """Parse an override value without including it in validation errors."""
         try:
             if re.fullmatch(
                 r'\s*([\[{"].*|true|false|null|\d+(\.\d+)?)\s*',
@@ -175,4 +176,4 @@ class JsonParamType(ParamType):
                 return json.loads(value)
             return value.strip()
         except json.JSONDecodeError:
-            self.fail(f'"{value}" is not a valid json value', param, ctx)
+            self.fail("Not a valid json value", param, ctx)

@@ -7,11 +7,12 @@ Clickhouse-control classes module
 import os
 import re
 import shutil
+import time
 from contextlib import contextmanager, suppress
 from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE  # type: ignore
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Generator, Iterable, Sequence
 
 from ch_backup import logging
 from ch_backup.backup.metadata import DetachedPartMetadata, TableMetadata
@@ -137,6 +138,7 @@ GET_TABLES_SQL_23_8 = strip_query(
 
 # engine_full shares the CREATE AST already read for create_table_query.
 # It adds no catalog lookup and lets _make_table resolve cold TableProxy engines.
+# Exclude external databases before table enumeration, which accesses their sources.
 GET_TABLES_SHORT_SQL = strip_query(
     """
     SELECT
@@ -149,6 +151,10 @@ GET_TABLES_SHORT_SQL = strip_query(
     FROM system.tables
     WHERE ({db_condition})
       AND ({tables_condition})
+      AND database IN (
+          SELECT name FROM system.databases
+          WHERE engine NOT IN ('MySQL', 'MaterializedMySQL', 'PostgreSQL', 'MaterializedPostgreSQL')
+      )
     ORDER BY metadata_modification_time
     FORMAT JSON
 """
@@ -193,6 +199,29 @@ CHECK_TABLE_SQL = strip_query(
     FROM system.tables
     WHERE database = {db_name} AND name = {table_name}
     FORMAT TSVRaw
+"""
+)
+
+GET_REFRESHABLE_MATERIALIZED_VIEWS_SQL = strip_query(
+    """
+    SELECT
+        database,
+        view
+    FROM system.view_refreshes
+    {status_condition}
+    FORMAT JSON
+"""
+)
+
+SYSTEM_STOP_VIEW_SQL = strip_query(
+    """
+    SYSTEM STOP VIEW `{db_name}`.`{view_name}`
+"""
+)
+
+SYSTEM_START_VIEW_SQL = strip_query(
+    """
+    SYSTEM START VIEW `{db_name}`.`{view_name}`
 """
 )
 
@@ -299,10 +328,8 @@ GET_DDL_QUEUE_STATUS_SQL = strip_query(
     """
     SELECT
         entry,
-        query,
         status,
-        exception_code,
-        exception_text
+        exception_code
     FROM system.distributed_ddl_queue
     WHERE cluster = {db_name}
       AND status != 'Finished'
@@ -646,6 +673,9 @@ class ClickhouseCTL:
         self._freeze_timeout = self._ch_ctl_config["freeze_timeout"]
         self._unfreeze_timeout = self._ch_ctl_config["unfreeze_timeout"]
         self._restore_replica_timeout = self._ch_ctl_config["restore_replica_timeout"]
+        self._refreshable_views_stop_timeout = self._ch_ctl_config[
+            "refreshable_views_stop_timeout"
+        ]
         self._drop_replica_timeout = self._ch_ctl_config["drop_replica_timeout"]
         settings = self._ch_ctl_config.get("settings")
         if settings is not None and not isinstance(settings, dict):
@@ -742,10 +772,13 @@ class ClickhouseCTL:
         """
         Collect all freeze queries from prev backup and kill them all.
         """
+        # An empty match is normal here. ClickHouse 26.11 started raising for it by default.
+        settings = {"kill_throw_if_noop": 0} if self.ch_version_ge("26.10") else None
         self._ch_client.query(
             KILL_RUNNING_FREEZE_SQL.format(
                 user=sql_string_literal(self._ch_ctl_config["user"])
-            )
+            ),
+            settings=settings,
         )
 
     # pylint: disable=too-many-positional-arguments
@@ -1075,13 +1108,13 @@ class ClickhouseCTL:
         """
         Restore database.
         """
-        self._ch_client.query(database_schema)
+        self._ch_client.query(database_schema, sensitive=True)
 
     def restore_udf(self, udf_statement):
         """
         Restore user defined function.
         """
-        self._ch_client.query(udf_statement)
+        self._ch_client.query(udf_statement, sensitive=True)
 
     def restore_named_collection(self, nc_statement):
         """
@@ -1185,7 +1218,7 @@ class ClickhouseCTL:
         """
         Restore workload entity (WORKLOAD or RESOURCE).
         """
-        self._ch_client.query(entity_statement)
+        self._ch_client.query(entity_statement, sensitive=True)
 
     def create_table(self, table: Table) -> None:
         """
@@ -1198,7 +1231,7 @@ class ClickhouseCTL:
         settings = (
             {"allow_experimental_unique_key": 1} if table.has_unique_key() else None
         )
-        self._ch_client.query(table.create_statement, settings=settings)
+        self._ch_client.query(table.create_statement, settings=settings, sensitive=True)
 
     def restore_replica(self, table: Table) -> None:
         """
@@ -1211,6 +1244,66 @@ class ClickhouseCTL:
             ),
             timeout=self._restore_replica_timeout,
         )
+
+    def _get_refreshable_materialized_views(
+        self, running_only: bool = False
+    ) -> list[tuple[str, str]]:
+        if not self.ch_version_ge("23.12"):
+            return []
+
+        return [
+            (row["database"], row["view"])
+            for row in self._ch_client.query(
+                GET_REFRESHABLE_MATERIALIZED_VIEWS_SQL.format(
+                    status_condition="WHERE status = 'Running'" if running_only else ""
+                )
+            )["data"]
+        ]
+
+    def _set_refreshable_materialized_views_running(self, running: bool) -> None:
+        query = SYSTEM_START_VIEW_SQL if running else SYSTEM_STOP_VIEW_SQL
+        for database, view in self._get_refreshable_materialized_views():
+            self._ch_client.query(
+                query.format(db_name=escape(database), view_name=escape(view))
+            )
+
+    def _wait_for_refreshable_materialized_views_to_stop(self) -> None:
+        deadline = time.monotonic() + self._refreshable_views_stop_timeout
+        while running_views := self._get_refreshable_materialized_views(
+            running_only=True
+        ):
+            if time.monotonic() >= deadline:
+                views = ", ".join(
+                    f"{database}.{view}" for database, view in running_views
+                )
+                raise ClickhouseBackupError(
+                    f"Timed out waiting for refreshable materialized views to stop: {views}"
+                )
+            time.sleep(1)
+
+    @contextmanager
+    def stop_refreshable_materialized_views_for_restore(
+        self, databases: Sequence[str]
+    ) -> Generator[None, None, None]:
+        """Pause refreshable views while table restore is in progress."""
+        if not databases or not self.ch_version_ge("23.12"):
+            yield
+            return
+
+        try:
+            self._set_refreshable_materialized_views_running(False)
+            self._wait_for_refreshable_materialized_views_to_stop()
+            yield
+        except BaseException:
+            try:
+                self._set_refreshable_materialized_views_running(True)
+            except Exception:
+                logging.error(
+                    "Failed to start refreshable materialized views while restore was failing",
+                    exc_info=True,
+                )
+            raise
+        self._set_refreshable_materialized_views_running(True)
 
     def get_parts_of_other_replicas(
         self, table: Table, zk_ctl: ZookeeperCTL
@@ -1299,7 +1392,7 @@ class ClickhouseCTL:
     def get_ddl_queue_unfinished_status(self, db_name: str) -> list[dict]:
         """
         Get pending DDL entries from system.distributed_ddl_queue for a replicated database.
-        Returns list of entries with status, exception_code and exception_text.
+        Returns entry names, statuses and exception codes.
         An empty list means all DDL entries have been processed (sync is complete).
         """
         try:
@@ -1339,12 +1432,12 @@ class ClickhouseCTL:
         return os.path.join(self._get_table_detached_path(table, disk_name), part_name)
 
     @staticmethod
-    def detached_part_matches(part: DetachedPartMetadata, part_path: str) -> bool:
+    def detached_part_matches(
+        part: DetachedPartMetadata, part_path: str, *, strict: bool = False
+    ) -> bool:
         """Return whether an existing directory matches backed-up part metadata."""
-        if not os.path.isdir(part_path):
-            return False
         try:
-            files = list_dir_files(part_path)
+            files = list(scan_dir_files(Path(part_path)))
             if sorted(files) != sorted(part.files):
                 return False
             abs_paths = [Path(part_path) / file for file in files]
@@ -1352,6 +1445,8 @@ class ClickhouseCTL:
                 return False
             if not part.checksum:
                 return True
+            if not part.object_storage and "checksums.txt" not in files:
+                return False
             checksum = (
                 _get_cloud_part_checksum_and_size(part_path, files)[0]
                 if part.object_storage
@@ -1359,6 +1454,8 @@ class ClickhouseCTL:
             )
             return checksum == part.checksum
         except OSError:
+            if strict:
+                raise
             return False
 
     def scan_detached_parts(
@@ -1730,7 +1827,8 @@ class ClickhouseCTL:
         # Hex encoding preserves quotes, backslashes and whitespace in the input.
         query_hex = query.encode("utf-8").hex()
         resp = self._ch_client.query(
-            f"SELECT formatQuerySingleLine(unhex('{query_hex}')) AS query FORMAT JSON"
+            f"SELECT formatQuerySingleLine(unhex('{query_hex}')) AS query FORMAT JSON",
+            sensitive=True,
         )
         return resp["data"][0]["query"]
 

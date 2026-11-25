@@ -239,6 +239,7 @@ Options:
 
 Commands:
   backup   Perform backup.
+  check    Check that backups are readable and their data is in place.
   copy     Copy backup to another storage (another S3 bucket, endpoint or path).
   delete   Delete particular backup.
   list     List existing backups.
@@ -246,6 +247,37 @@ Commands:
   restore  Restore data from a particular backup.
   show     Show details for a particular backup.
 ```
+
+### Checking backups
+
+`ch-backup check` reads backups (or all backups with `--all`) and reports for each of them whether
+it can be restored completely. Nothing is written, ClickHouse and ZooKeeper are not used.
+
+```bash
+ch-backup check --all
+ch-backup check --deep --workers 8 --tmp-dir /var/tmp --format json 20261010T000000
+```
+
+- Light and full metadata and schemas are downloaded and decrypted.
+- Data of a part may be stored in an older backup it links to. Each stored object is checked once,
+  and its problem is reported for every backup linking to it. Disk metadata of a table on a cloud
+  storage disk describes many parts, so its problem is reported only for backups needing those parts.
+- Without `--deep`, presence and size of part tarballs are checked. `--deep` downloads parts as restore
+  does into `--tmp-dir` and compares their files and `checksums.txt` with metadata. Content of encrypted
+  parts is verified completely, content of not encrypted parts is verified only for `checksums.txt`.
+- For cloud storage disks, disk metadata of tables is downloaded and parsed, and files of each part in it
+  are compared with metadata. Data copied into the backup with `--copy-cloud-storage-data` is checked
+  for presence and size of objects; objects in the bucket of the disk are not checked and are counted
+  in `unverified`.
+- Presence of access control entities is checked; `--deep` downloads them as restore does and checks
+  that every entity listed in metadata is present.
+- Tables whose data was left out of the backup with a reason recorded in its metadata, such as a unique
+  key, are listed in `skipped_data`: there is nothing to check in them, and restore brings back only
+  their schema. Tables left without some parts after `--keep-going` are listed there with those parts. A backup made with `--schema-only` holds no data at all and is reported as intact.
+- Objects whose content can't be verified are counted in `unverified`. The command exits with code 2 if
+  any backup in the state `created` or with unreadable state is broken; backups in other states, such as
+  `failed`, are reported but don't affect the exit code.
+- Backups are not locked, so a backup deleted or purged during the check may be reported as broken.
 
 ### S3 client lifetime
 
@@ -427,7 +459,7 @@ Behavior and limitations:
 - Copy acquires the configured source and target locks through completion, including retries and
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
-  Locking remains optional; the local file lock retains its shared semantics.
+  Locking remains optional for ordinary operations; local file locks are exclusive.
 - Set `multiprocessing.metadata_read_threads` in the target configuration to control parallel
   source and target light-metadata reads at copy startup (default: `4`, positive integer).
   Each batch holds at most this many reads; set `1` for sequential reading.
@@ -775,3 +807,43 @@ Results are printed at startup under `staging/parallel/<run-id>/results/`:
 
 All twelve existing CI combinations use three slots. JUnit and diagnostics are
 uploaded on both success and failure with run-attempt-specific artifact names.
+
+When light metadata is missing or unreadable, backup listing falls back to full
+metadata. This keeps deduplication references visible to `delete` and `purge`.
+Deleting a backup with readable full metadata preserves referenced parts and
+rewrites its light metadata through the normal deletion path. A referenced backup
+whose full metadata cannot be read is not partially deleted by default.
+
+Use `ch-backup delete BACKUP --delete-unreadable` or `ch-backup purge
+--delete-unreadable` to devalue unreadable backups (`backup.delete_unreadable: true`
+in config; default `false`). This includes temporary S3 read failures. Upgrade all
+writers first, enable `lock.zk_flock`, and use the same ZooKeeper ensemble/path
+for operations sharing storage. Explicit delete affects only its target; purge with retention also
+includes unreadable candidates whose age cannot be determined. Unknown references
+in retained backups, listing failures and unreadable markers stop deletion.
+
+`delete_pending.json` preserves the intent even if manifests return. Each attempt
+rereads retained references, keeps shared parts and cloud data, and records
+`referenced_by`; see `list -a -v --format=json`. Marked backups cannot be restored
+independently or reused for new deduplication. Existing dependent backups retain
+access. `delete BACKUP`, `delete BACKUP --purge-partial` and `purge` retry cleanup
+without the flag; purge retries even without retention. The marker is deleted last.
+Unknown original/copy provenance prevents automatic UNFREEZE.
+
+New cloud backups store restore settings in `cloud_storage_info.json` and claim an
+empty cloud prefix with `.cloud_storage_owner.json`. Legacy cloud data without
+proven ownership remains pending. Dependent cloud restore/copy requires readable
+manifests or the descriptor; settings are never guessed from object names.
+
+For a pre-upgrade cloud backup with readable full metadata, use
+`ch-backup adopt-cloud-storage BACKUP --confirm-owner` before delete/purge.
+Enable the shared `lock.zk_flock` first. The flag asserts that the entire sanitized
+prefix belongs exclusively to this backup, including historical objects; verify
+that from the storage's backup history before running it. The command rejects
+conflicting names, metadata or owner claims and writes no payload. It cannot prove
+historical ownership from LIST; leave ambiguous prefixes unclaimed. A successful
+adoption unblocks strict inventory and permits later cleanup of that cloud prefix.
+
+Writers also refuse nonempty cloud prefixes without an owner claim. Before
+resuming a legacy copy or deleting legacy cloud data, adopt its verified owner;
+readable manifests alone do not bypass the ownership check.

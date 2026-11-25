@@ -164,6 +164,8 @@ def _escape(value: str) -> str:
     """
     Escape string as ClickHouse writeEscapedString() does.
     """
+    if not any(char in value for char in _ESCAPED_CHARS):
+        return value
     return "".join(_ESCAPED_CHARS.get(char, char) for char in value)
 
 

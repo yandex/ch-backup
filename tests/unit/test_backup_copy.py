@@ -10,14 +10,16 @@ import json
 import os
 from concurrent.futures import BrokenExecutor
 from functools import partial
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from ch_backup import logging as ch_logging
-from ch_backup.backup.copier import BackupCopier
+from ch_backup.backup.copier import BackupCopier, _RewrittenTarball
 from ch_backup.backup.copy_context import CopyContext
+from ch_backup.backup.copy_index import CopyEntries
 from ch_backup.backup.copy_report import CopyReport, print_copy_report
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (
@@ -25,6 +27,7 @@ from ch_backup.backup.metadata import (
     BackupState,
     DetachedPartMetadata,
 )
+from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageBackup
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.encryption import (
     get_cloud_storage_data_encryption_metadata,
@@ -35,6 +38,11 @@ from ch_backup.exceptions import (
     ConfigurationError,
     StorageError,
     TerminatingSignal,
+)
+from ch_backup.storage.metadata_archive import (
+    MetadataFiles,
+    TemporaryMetadataArchive,
+    spool_metadata,
 )
 from ch_backup.storage.object_copy import CopyEntry, storage_id
 from ch_backup.util import now
@@ -56,10 +64,34 @@ class FakeEngine:
         self._objects = store.buckets.setdefault(self._id, {})
 
     def list_dir_with_sizes(self, remote_path: str) -> dict[str, int]:
+        """Collect all pages for callers that need a complete fixture listing."""
+        result: dict[str, int] = {}
+        continuation = None
+        while True:
+            page, continuation = self.read_listing_page(remote_path, continuation)
+            result.update(page)
+            if continuation is None:
+                return result
+
+    def read_listing_page(
+        self, remote_path: str, continuation: str | None = None
+    ) -> tuple[list[tuple[str, int]], str | None]:
+        """Read at most 128 fixture objects after the continuation key."""
         prefix = remote_path.strip("/") + "/"
         if prefix in self._store.list_errors:
             raise StorageError(f"Failed to list {prefix}")
-        return {k: v for k, v in self._objects.items() if k.startswith(prefix)}
+        entries = sorted(
+            (k, v)
+            for k, v in self._objects.items()
+            if k.startswith(prefix) and (continuation is None or k > continuation)
+        )
+        page = entries[:128]
+        return page, page[-1][0] if len(entries) > 128 else None
+
+    def download_file(self, remote_path, local_path):
+        """Save an object to the requested scratch file."""
+        with open(local_path, "wb") as output:
+            output.write(self.download_data(remote_path))
 
     def upload_data(self, data: bytes, remote_path: str) -> str:
         self._objects[remote_path] = len(data)
@@ -119,6 +151,8 @@ class FakeLayout:
     ) -> None:
         self.path_root = path_root
         self.backups = {b.name: b for b in backups}
+        self.pending: set[str] = set()
+        self.descriptors: dict[str, CloudStorageBackup] = {}
         self.uploaded: list[tuple[str, BackupState]] = []
         self.copied: list[CopyEntry] = []
         self.cloud_storage_files: dict[str, list[tuple[str, bytes]]] = {}
@@ -134,8 +168,19 @@ class FakeLayout:
         self.source: FakeLayout | None = None
         self.copied_files: dict[str, list[tuple[str, bytes]]] = {}
 
+    def get_delete_pending(self, backup_name: str) -> dict | None:
+        """Return deletion intents independently of the fake manifests."""
+        return {"backup_name": backup_name} if backup_name in self.pending else None
+
+    def get_cloud_storage_backup(self, backup_name: str) -> CloudStorageBackup | None:
+        """Read the independently stored cloud restore settings."""
+        return self.descriptors.get(backup_name)
+
+    def claim_cloud_storage(self, backup_name: str) -> None:
+        """Storage ownership is covered by the real-layout tests."""
+
     def get_backup_names(self):
-        return list(self.backups)
+        return list(dict.fromkeys([*self.backups, *sorted(self.pending)]))
 
     get_table_data_files = BackupLayout.get_table_data_files
     check_data_part_files = BackupLayout.check_data_part_files
@@ -155,7 +200,9 @@ class FakeLayout:
             self.get_cloud_storage_path(backup_name), "cloud_storage", disk_name
         )
 
-    def get_backup(self, backup_name, use_light_meta=False):
+    def get_backup(self, backup_name, use_light_meta=False, *, allow_pending=False):
+        if backup_name in self.pending and not allow_pending:
+            raise StorageError(f"Backup {backup_name} is pending deletion")
         backup = self.backups.get(backup_name)
         return copy.deepcopy(backup) if backup else None
 
@@ -205,25 +252,40 @@ class FakeLayout:
         prefix = os.path.join(self.get_backup_path(backup_name), "disks", disk_name)
         return sorted(p for p in self.metadata_files() if p.startswith(prefix))
 
-    def get_cloud_storage_metadata_files(self, backup_meta, remote_path):
-        return list(self.metadata_files()[remote_path])
+    def download_cloud_storage_metadata_archive(self, backup_meta, remote_path):
+        return spool_metadata(self.metadata_files()[remote_path])
 
     def metadata_files(self) -> dict[str, list[tuple[str, bytes]]]:
         return {**self.copied_files, **self.cloud_storage_files}
 
     def upload_cloud_storage_metadata_files(
-        self, backup_meta, remote_path, files, callback=None, on_error=None
-    ):
+        self,
+        backup_meta: BackupMetadata,
+        remote_path: str,
+        files: MetadataFiles,
+        callback: Callable[[], None] | None = None,
+        on_error: Callable[[Exception], None] | None = None,
+    ) -> None:
         error = self.metadata_errors.get(remote_path)
         if error:
             if on_error:
                 on_error(error)
             raise error
-        self.cloud_storage_files[remote_path] = files
+        if isinstance(files, TemporaryMetadataArchive):
+            materialized = []
+            continuation = None
+            while True:
+                batch, continuation = files.read_batch(continuation)
+                materialized.extend(batch)
+                if continuation is None:
+                    break
+        else:
+            materialized = list(files)
+        self.cloud_storage_files[remote_path] = materialized
         if self.store:
             self.store.buckets.setdefault(("s3", ENDPOINT, DST_BUCKET), {})[
                 remote_path
-            ] = sum(len(data) for _, data in files)
+            ] = sum(len(data) for _, data in materialized)
         if callback:
             callback()
 
@@ -562,7 +624,7 @@ def test_copy_mode_cache_isolates_credentials(
         patch("ch_backup.backup.copier.logging") as logging,
     ):
         # pylint: disable-next=protected-access
-        copied = list(ctx.make_copier()._resolve_copy_mode(entries))
+        copied = list(ctx.make_copier()._resolve_copy_mode(CopyEntries(entries)))
 
     expected = {"copy/a/second": True, "copy/b/second": second_mode == "available"}
     if second_mode != "available":
@@ -1586,6 +1648,20 @@ def test_cloud_storage_disk_endpoints(
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
 
 
+@pytest.fixture
+def sealed_rewritten_archives(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Require planners to release archive descriptors before retaining their paths."""
+
+    def retain(path, files):
+        """Check the completed archive remains readable after its writer closes."""
+        assert isinstance(files, TemporaryMetadataArchive)
+        assert Path(files.path()).is_file()
+        return _RewrittenTarball(path, files)
+
+    monkeypatch.setattr("ch_backup.backup.copier._RewrittenTarball", retain)
+
+
+@pytest.mark.usefixtures("sealed_rewritten_archives")
 def test_cloud_storage_full_object_keys() -> None:
     ctx = _cloud_storage_context()
     tarball = "ch_backup/b1/disks/s3/db1/t1.tar.gz"
@@ -1647,10 +1723,14 @@ def test_cloud_storage_unsupported_metadata() -> None:
 
 
 @pytest.mark.parametrize("version", [3, 5])
-@pytest.mark.parametrize("linked", [False, True])
+@pytest.mark.parametrize(
+    "linked,owner_status",
+    [(False, "legacy"), (True, "legacy"), (True, "pending"), (True, "descriptor")],
+)
+@pytest.mark.usefixtures("sealed_rewritten_archives")
 @pytest.mark.parametrize("source_path_override", [None, "other/path"])
 def test_full_cloud_storage_copy(
-    version: int, linked: bool, source_path_override: str | None
+    version: int, linked: bool, owner_status: str, source_path_override: str | None
 ) -> None:
     part = {
         **_part(
@@ -1672,6 +1752,11 @@ def test_full_cloud_storage_copy(
     # A retained, partially deleted backup is still a valid source for linked data.
     owner.state = BackupState.PARTIALLY_DELETED
     ctx = CopyTestContext([backup, owner])
+    if owner_status != "legacy":
+        ctx.layout.pending.add("base")
+    if owner_status == "descriptor":
+        del ctx.layout.backups["base"]
+        ctx.layout.descriptors["base"] = CloudStorageBackup("base", owner.cloud_storage)
     ctx.target_config["copy"]["cloud_storage"]["source"]["path"] = source_path_override
     ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     source_name = "base" if linked else "backup_1"
@@ -3277,8 +3362,8 @@ def test_files_scope_needs_no_settings_of_object_storage() -> None:
 
     with patch.object(
         ctx.layout,
-        "get_cloud_storage_metadata_files",
-        wraps=ctx.layout.get_cloud_storage_metadata_files,
+        "download_cloud_storage_metadata_archive",
+        wraps=ctx.layout.download_cloud_storage_metadata_archive,
     ) as download:
         ctx.copy(["b1"], scopes=["files"])
         bucket, target["bucket"] = target["bucket"], None
@@ -3674,3 +3759,13 @@ def test_cloud_storage_selection_only_with_data(only_with_data, names):
     expected = ["b1"] if only_with_data else (["empty"] if names else ["b1", "empty"])
     assert copied == expected
     assert not skipped
+
+
+@pytest.mark.parametrize("pending_side", ["source", "target"])
+def test_pending_backups_do_not_block_independent_copy(pending_side):
+    """Automatic source selection and target reservation skip deletion intents."""
+    ctx = CopyTestContext([_backup("good")])
+    layout = ctx.layout if pending_side == "source" else ctx.target_layout
+    layout.pending.add("retired")
+    assert ctx.copy() == (["good"], [])
+    assert "retired" not in ctx.target_layout.backups

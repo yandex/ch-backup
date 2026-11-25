@@ -284,6 +284,7 @@ def _make_backup_layout(config: dict) -> unittest.mock.MagicMock:
         real_layout = BackupLayout(config)  # type: ignore[arg-type]
 
     layout = unittest.mock.MagicMock()
+    layout.get_cloud_storage_backup.return_value = None
     layout.get_cloud_storage_data_path.side_effect = (
         real_layout.get_cloud_storage_data_path
     )
