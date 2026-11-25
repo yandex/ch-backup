@@ -18,7 +18,7 @@ import pytest
 
 from ch_backup.backup.copier import _add_cloud_storage_copy_entry
 from ch_backup.backup.copy_context import _archive_record
-from ch_backup.backup.copy_index import CopyEntries, CopyIndex, EntryIndex
+from ch_backup.backup.copy_index import CopyEntries, EntryIndex
 from ch_backup.compression.gzip import GZIPCompression
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import ClickhouseBackupError, StorageError
@@ -27,6 +27,7 @@ from ch_backup.storage.async_pipeline.pipeline_builder import PipelineBuilder
 from ch_backup.storage.async_pipeline.pipelines import run_and_collect_all
 from ch_backup.storage.metadata_archive import TemporaryMetadataArchive, spool_metadata
 from ch_backup.storage.object_copy import CopyEntry
+from ch_backup.storage.temporary_disk_index import TemporaryDiskIndex
 from tests.unit.test_backup_copy import _backup, _part
 from tests.unit.test_copy_context import STORAGE, MemoryEngine, _context, _entry
 
@@ -165,7 +166,7 @@ def test_plan_and_listing_read_in_order_and_roll_back_incomplete_import() -> Non
         f"src/{i}" for i in range(300)
     ]
     assert len(queries) == 3
-    records = CopyIndex()
+    records = TemporaryDiskIndex()
     records.put("old", b"confirmed")
     with pytest.raises(ValueError):
         with records.importing():
@@ -202,7 +203,7 @@ def test_entry_insert_only_reads_duplicate_keys() -> None:
 @pytest.mark.parametrize("deduplicate", [False, True])
 def test_index_batches_commits(deduplicate: bool) -> None:
     """Commit larger groups on both write paths and keep a bounded page cache."""
-    index = CopyIndex()
+    index = TemporaryDiskIndex()
     statements: Counter[str] = Counter()
 
     def count_statement(statement: str) -> None:
@@ -295,9 +296,11 @@ def test_filtered_plan_reads_remain_bounded(selection: str) -> None:
         )
 
     queries: Counter[str] = Counter()
-    read_batch = CopyIndex.read_batch
+    read_batch = TemporaryDiskIndex.read_batch
 
-    def read(index: CopyIndex, after: int, limit: int) -> list[tuple[int, str, bytes]]:
+    def read(
+        index: TemporaryDiskIndex, after: int, limit: int
+    ) -> list[tuple[int, str, bytes]]:
         """Verify every read uses the caller's bound."""
         assert 0 < limit <= 64
         queries["reads"] += 1
@@ -307,7 +310,9 @@ def test_filtered_plan_reads_remain_bounded(selection: str) -> None:
         EntryIndex, "_encode", side_effect=AssertionError("rewrote entries")
     ):
         selected = source.filtered(keep)
-        with patch.object(CopyIndex, "read_batch", autospec=True, side_effect=read):
+        with patch.object(
+            TemporaryDiskIndex, "read_batch", autospec=True, side_effect=read
+        ):
             assert _read_plan(selected, limit) == [
                 entry for entry in original if keep(entry)
             ]
@@ -319,7 +324,7 @@ def test_fully_confirmed_plan_does_not_scan_source_again() -> None:
     """Store one range and avoid rereading a fully confirmed plan."""
     source = CopyEntries(_entry(str(i)) for i in range(300))
     with patch.object(
-        CopyIndex, "put", autospec=True, side_effect=CopyIndex.put
+        TemporaryDiskIndex, "put", autospec=True, side_effect=TemporaryDiskIndex.put
     ) as store:
         selected = source.filtered(lambda _item: False)
     assert store.call_count == 1
@@ -350,7 +355,7 @@ def test_failed_filter_leaves_original_plan_unchanged() -> None:
 @pytest.mark.parametrize("size", [0, 1, 128, 129, 300])
 def test_index_reads_materialized_bounded_batches(size: int) -> None:
     """Each explicit read issues one query and releases the lock before return."""
-    index = CopyIndex()
+    index = TemporaryDiskIndex()
     expected = [(str(i), str(i).encode()) for i in range(size)]
     for key, blob in expected:
         index.put(key, blob)
@@ -372,7 +377,7 @@ def test_index_reads_materialized_bounded_batches(size: int) -> None:
 
 def test_index_updates_preserve_order_and_empty_blobs() -> None:
     """Keep insertion positions and distinguish absent keys from empty blobs."""
-    index = CopyIndex()
+    index = TemporaryDiskIndex()
     index.put("first//../\0", b"first")
     index.put("last", b"last")
     index.put("first//../\0", b"updated")

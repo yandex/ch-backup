@@ -13,12 +13,13 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory
 from types import TracebackType
 
 from ch_backup import logging
-from ch_backup.backup.copy_index import CopyEntries, CopyIndex
+from ch_backup.backup.copy_index import CopyEntries
 from ch_backup.backup.copy_journal_buffer import MAX_RECORD_BYTES, PendingJournalRecords
 from ch_backup.backup.metadata import BackupMetadata, CopyScope
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
 from ch_backup.storage.metadata_archive import MetadataFiles, TemporaryMetadataArchive
 from ch_backup.storage.object_copy import CopyEntry, storage_id
+from ch_backup.storage.temporary_disk_index import TemporaryDiskIndex
 
 COPY_CONTEXT_DIR = "copy_context"
 FAILED_OBJECTS_DIR = "failed"
@@ -111,7 +112,7 @@ class CopyContext:
         self._flushed_at = time.monotonic()
         self._flushed_size = 0
         self._buffer = PendingJournalRecords()
-        self._recorded = CopyIndex()
+        self._recorded = TemporaryDiskIndex()
         self._data_encryption = data_encryption
 
     def has_records(self) -> bool:
@@ -120,7 +121,7 @@ class CopyContext:
 
     def load(self) -> None:
         """Read records of previous runs, skipping files that cannot be read."""
-        paths = CopyIndex()
+        paths = TemporaryDiskIndex()
         try:
             continuation = None
             while True:

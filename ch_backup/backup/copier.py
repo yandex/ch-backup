@@ -25,7 +25,7 @@ from ch_backup.backup.copy_deduplication import (
     CopyDeduplication,
     copy_deduplication_cutoff,
 )
-from ch_backup.backup.copy_index import CopyEntries, CopyIndex, EntryIndex
+from ch_backup.backup.copy_index import CopyEntries, EntryIndex
 from ch_backup.backup.copy_report import BackupCopyResult, CopyReport
 from ch_backup.backup.deduplication import StoredFiles, _part_data_exists
 from ch_backup.backup.layout import (
@@ -89,6 +89,7 @@ from ch_backup.storage.object_copy import (
     server_side_copy_possible,
     storage_id,
 )
+from ch_backup.storage.temporary_disk_index import TemporaryDiskIndex
 from ch_backup.util import now, utcnow
 
 
@@ -178,7 +179,7 @@ class BackupCopier:
         self._target_backups: dict[str, BackupMetadata | None] = {}
         self._target_table_files: StoredFiles = {}
         # Files of backups in source storage used to resolve deduplication links.
-        self._source_backup_files: dict[str, CopyIndex] = {}
+        self._source_backup_files: dict[str, TemporaryDiskIndex] = {}
         # Original part identity -> successfully materialized target owner and name.
         self._materialized_parts: dict[tuple, tuple[str, str]] = {}
         self._target_deduplication: CopyDeduplication | None = None
@@ -1257,7 +1258,7 @@ class BackupCopier:
         backup_name: str,
         layout: BackupLayout | None = None,
         storage: dict | None = None,
-    ) -> CopyIndex:
+    ) -> TemporaryDiskIndex:
         """
         Return sizes of files of the backup in source storage keyed by path relative to backup directory.
 
@@ -1267,7 +1268,7 @@ class BackupCopier:
         if backup_name not in self._source_backup_files:
             layout = layout or self._layout
             backup_dir = _key(layout.get_backup_path(backup_name)).rstrip("/")
-            files = CopyIndex()
+            files = TemporaryDiskIndex()
             continuation = None
             while True:
                 page, continuation = self._engine(
@@ -1750,7 +1751,7 @@ class BackupCopier:
             return
         listing = self._list_target_objects(backup, plan)
 
-        def pending(entry: CopyEntry, sizes: CopyIndex = listing) -> bool:
+        def pending(entry: CopyEntry, sizes: TemporaryDiskIndex = listing) -> bool:
             """Keep objects unless both their target size and journal record match."""
             blob = sizes.get(
                 json.dumps([storage_id(entry.dst_storage), _key(entry.dst_path)])
@@ -2084,13 +2085,13 @@ class BackupCopier:
 
     def _list_target_objects(
         self, backup: BackupMetadata, plan: _CopyPlan
-    ) -> CopyIndex:
+    ) -> TemporaryDiskIndex:
         """
         Return sizes of objects of the copied backup in target storages.
 
         On failure nothing is returned, so all objects are copied again.
         """
-        listing: CopyIndex = CopyIndex()
+        listing: TemporaryDiskIndex = TemporaryDiskIndex()
         listed = set()
         try:
             for storage, prefix in self._target_prefixes(backup, plan):
@@ -2120,9 +2121,9 @@ class BackupCopier:
             listing.clear()
         return listing
 
-    def _list(self, storage: dict, prefix: str) -> CopyIndex:
+    def _list(self, storage: dict, prefix: str) -> TemporaryDiskIndex:
         """Index a listing without retaining all keys in RAM."""
-        listing: CopyIndex = CopyIndex()
+        listing: TemporaryDiskIndex = TemporaryDiskIndex()
         continuation = None
         while True:
             page, continuation = self._engine(storage).read_listing_page(
@@ -2294,7 +2295,7 @@ def _key(path: str | None) -> str:
     return (path or "").lstrip("/")
 
 
-def _listed_size(index: CopyIndex, key: str) -> int | None:
+def _listed_size(index: TemporaryDiskIndex, key: str) -> int | None:
     """Decode a listed size while preserving absent objects."""
     blob = index.get(key)
     return None if blob is None else int(blob)
