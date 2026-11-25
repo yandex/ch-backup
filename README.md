@@ -50,7 +50,8 @@ of parts. After an interruption, wait for the process and its transfer workers
 to exit before retrying. The retry clears the staging workspace and downloads
 local parts that still need to be attached, including those marked `DOWNLOADED`.
 If the process stopped between removal and rename, this download replaces the
-missing part. A successful restore removes the workspace.
+missing part. Restore removes the workspace after publication. With `--keep-going`,
+a cleanup failure is logged and published parts proceed to attachment.
 
 Older releases used `.ch-backup-<uuid>` directories that cannot be matched to
 their destination automatically. After workers have stopped,
@@ -597,8 +598,9 @@ A user-created directory with this exact name and layout is also
 treated as a workspace and may be removed during restore. A user-detached
 directory of the same name with other contents is eligible for backup under the
 usual disk and reason filters, even if its `checksums.txt` is missing. If a
-local part restore encounters such a directory on the destination disk, it stops
-and reports the path for inspection.
+local part restore encounters such a directory on the destination disk, it reports
+the path and stops. With `--keep-going`, it marks parts that need this workspace
+as invalid and continues restoring other parts.
 
 Restore is also opt-in: pass `--restore-detached-parts` to a data restore.
 Without this option detached-part metadata is ignored. Enabled restores put

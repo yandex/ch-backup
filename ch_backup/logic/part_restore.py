@@ -7,6 +7,7 @@ from pathlib import Path
 from tarfile import BLOCKSIZE
 from typing import Callable
 
+from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata, split_part_name
 from ch_backup.calculators import calc_aligned_files_size
@@ -91,20 +92,33 @@ class LocalPartRestorer:
         self._keep_going = keep_going
         self._on_success = on_success
         self._on_error = on_error
-        self._roots: set[Path] = set()
+        self._preparation_errors: dict[Path, str | None] = {}
         self._completed: list[tuple[PartMetadata, Path, Path]] = []
 
-    def prepare(self, detached: Path) -> None:
-        """Clear abandoned downloads once per target path, including disks with only restored parts."""
-        root = detached / LOCAL_RESTORE_DIR
-        if root not in self._roots:
+    def _try_clear_workspace(self, root: Path) -> str | None:
+        try:
             _clear_workspace(root)
-            self._roots.add(root)
+        except (OSError, ClickhouseBackupError) as error:
+            if not self._keep_going:
+                raise
+            message = f"Failed to clear restore workspace {root}: {error}"
+            logging.warning(message)
+            return message
+        return None
+
+    def prepare(self, detached: Path) -> str | None:
+        """Prepare each workspace once and return the reason if it cannot be used."""
+        root = detached / LOCAL_RESTORE_DIR
+        if root not in self._preparation_errors:
+            self._preparation_errors[root] = self._try_clear_workspace(root)
+        return self._preparation_errors[root]
 
     def download(self, part: PartMetadata, destination: str) -> None:
         """Schedule a download into the workspace on the target disk."""
         final = Path(destination)
-        self.prepare(final.parent)
+        error = self.prepare(final.parent)
+        if error is not None:
+            raise ClickhouseBackupError(error)
         root = final.parent / LOCAL_RESTORE_DIR
         root.mkdir(parents=True, exist_ok=True)
         staging = root / final.name
@@ -138,5 +152,6 @@ class LocalPartRestorer:
                 # A state persistence failure must propagate even with keep-going.
                 self._on_success(part)
         finally:
-            for root in self._roots:
-                _clear_workspace(root)
+            for root, preparation_error in self._preparation_errors.items():
+                if preparation_error is None:
+                    self._try_clear_workspace(root)
