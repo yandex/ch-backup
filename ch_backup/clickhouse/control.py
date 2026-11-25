@@ -768,10 +768,13 @@ class ClickhouseCTL:
         """
         Collect all freeze queries from prev backup and kill them all.
         """
+        # An empty match is normal here. ClickHouse 26.11 started raising for it by default.
+        settings = {"kill_throw_if_noop": 0} if self.ch_version_ge("26.10") else None
         self._ch_client.query(
             KILL_RUNNING_FREEZE_SQL.format(
                 user=sql_string_literal(self._ch_ctl_config["user"])
-            )
+            ),
+            settings=settings,
         )
 
     # pylint: disable=too-many-positional-arguments
