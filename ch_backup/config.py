@@ -198,6 +198,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "endpoint_url": None,
             "access_key_id": None,
             "secret_access_key": None,
+            "aws_config_file": None,
             "bucket": None,
         },
         "boto_config": {
@@ -422,7 +423,7 @@ class Config:
 
     def _recursively_update(self, base_dict, update_dict):
         for key, value in update_dict.items():
-            if isinstance(value, dict):
+            if isinstance(value, dict) and key != "aws_config_file":
                 if key not in base_dict:
                     base_dict[key] = {}
                 self._recursively_update(base_dict[key], update_dict[key])
@@ -437,12 +438,19 @@ class Config:
         return self._conf
 
     def derive(
-        self, config_file: str | None = None, patch: dict | None = None
+        self,
+        config_file: str | None = None,
+        patch: dict | None = None,
+        *,
+        for_copy_target: bool = False,
     ) -> "Config":
         """
         Return a copy of the config with applied changes from config file and the patch.
         """
         config = copy.deepcopy(self)
+        if for_copy_target:
+            config["storage"]["credentials"].pop("aws_config_file", None)
+            config["storage"].pop("_aws_config_revision", None)
         if config_file:
             config.merge(self._load_config_file(config_file))
         if patch:

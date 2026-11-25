@@ -10,6 +10,7 @@ from functools import partial
 from typing import Any
 
 import psutil
+from botocore.exceptions import CredentialRetrievalError
 from loguru import logger
 
 from ch_backup.formatting import format_size
@@ -56,6 +57,33 @@ def _format(fmt, record):
     return result_fmt + "\n{exception}"
 
 
+def _contains_sdk_credentials(record: logging.LogRecord) -> bool:
+    """Identify botocore debug records that can contain temporary credentials."""
+    if record.name == "botocore.auth":
+        return "x-amz-security-token" in record.getMessage().lower()
+    if not isinstance(record.args, tuple) or not record.args:
+        return False
+    if record.name == "botocore.endpoint":
+        if record.msg == "Sending http request: %s":
+            return "X-Amz-Security-Token" in getattr(record.args[0], "headers", {})
+        if record.msg == "Making request for %s with params: %s":
+            return getattr(record.args[0], "name", None) == "AssumeRoleWithWebIdentity"
+    if record.name == "botocore.parsers" and record.msg == "Response body:\n%r":
+        body = record.args[0]
+        return isinstance(body, bytes) and b"secretaccesskey" in body.lower()
+    return False
+
+
+def is_sensitive_header_error(exc: BaseException | None) -> bool:
+    """Identify transport validation errors that embed raw header values."""
+    return (
+        isinstance(exc, ValueError)
+        and bool(exc.args)
+        and isinstance(exc.args[0], str)
+        and exc.args[0].startswith(("Invalid header value", "Invalid header name"))
+    )
+
+
 class InterceptHandler(logging.Handler):
     """
     Helper class for logging interception.
@@ -67,6 +95,21 @@ class InterceptHandler(logging.Handler):
 
         The handler for loguru will be chosen based on module name.
         """
+
+        if _contains_sdk_credentials(record):
+            return
+
+        exc_info = record.exc_info
+        if record.name == "botocore.httpsession" and exc_info:
+            if is_sensitive_header_error(exc_info[1]):
+                exc_info = None
+        if record.name == "botocore.credentials" and exc_info:
+            sdk_error = exc_info[1]
+            if (
+                isinstance(sdk_error, CredentialRetrievalError)
+                and sdk_error.kwargs.get("provider") == "custom-process"
+            ):
+                exc_info = None
 
         # Get corresponding Loguru level if it exists.
         level: int or str  # type: ignore
@@ -81,9 +124,9 @@ class InterceptHandler(logging.Handler):
             frame = frame.f_back
             depth += 1
 
-        logger.bind(logger_name=record.name).opt(
-            depth=depth, exception=record.exc_info
-        ).log(level, record.getMessage())
+        logger.bind(logger_name=record.name).opt(depth=depth, exception=exc_info).log(
+            level, record.getMessage()
+        )
 
 
 def configure(config_loguru: dict) -> None:

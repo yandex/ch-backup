@@ -62,8 +62,14 @@ from ch_backup.logic.udf import UDFBackup
 from ch_backup.logic.workload_entities import WorkloadEntitiesBackup
 from ch_backup.storage.async_pipeline.stages import EncryptStage
 from ch_backup.storage.engine.s3 import validate_s3_retry_config
-from ch_backup.storage.engine.s3.s3_config import validate_s3_module_config
-from ch_backup.storage.object_copy import parse_server_side_copy_mode
+from ch_backup.storage.engine.s3.s3_config import (
+    resolve_copy_endpoint,
+    validate_s3_module_config,
+)
+from ch_backup.storage.object_copy import (
+    parse_server_side_copy_mode,
+    validate_aws_config,
+)
 from ch_backup.util import cached_property, now, utcnow
 from ch_backup.version import get_version
 
@@ -98,7 +104,7 @@ class ClickhouseBackup:
         self._we_backup_manager = WorkloadEntitiesBackup()
 
     @staticmethod
-    def _validate_config(config: Config) -> None:
+    def _validate_config(config: Config, *, reload: bool = False) -> None:
         """Validate operation settings and explicit destructive policies."""
         if not isinstance(config["backup"].get("delete_unreadable", False), bool):
             raise ValueError("backup.delete_unreadable must be true or false")
@@ -112,6 +118,7 @@ class ClickhouseBackup:
         if config["storage"]["type"] == "s3":
             validate_s3_retry_config(config["storage"])
             validate_s3_module_config(config["storage"])
+            validate_aws_config(config["storage"], reload=reload)
 
     @property
     def config(self) -> Config:
@@ -132,9 +139,9 @@ class ClickhouseBackup:
         """
         Completely reloads the config.
         """
-        self._validate_config(config)
+        self._validate_config(config, reload=True)
         logging.info("Reloading config.")
-        del self._context
+        self.__dict__.pop("_context", None)
         self._config = config
         logging.info("Config reloaded.")
 
@@ -697,10 +704,18 @@ class ClickhouseBackup:
             report.backups.clear()
         try:
             self._validate_config(target_config)
+            if self._config["storage"]["type"] == "s3":
+                validate_aws_config(self._config["storage"])
+            source_config = resolve_copy_endpoint(self._config, target_config)
+            target_config = resolve_copy_endpoint(target_config, self._config)
             copier = BackupCopier(
-                config=self._config,
+                config=source_config,
                 target_config=target_config,
-                layout=self._context.backup_layout,
+                layout=(
+                    self._context.backup_layout
+                    if source_config is self._config
+                    else BackupLayout(source_config)
+                ),
                 target_layout=BackupLayout(target_config),
                 ch_config=self._context.ch_config,
             )

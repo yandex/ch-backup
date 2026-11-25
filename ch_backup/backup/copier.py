@@ -75,6 +75,7 @@ from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecP
 from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
 from ch_backup.storage.engine.s3 import S3RetryingError
+from ch_backup.storage.engine.s3.s3_config import resolve_copy_endpoint
 from ch_backup.storage.metadata_archive import (
     MetadataArchiveWriter,
     MetadataFiles,
@@ -153,13 +154,17 @@ class BackupCopier:
         Target table listings map (backup, database, table) to part, file and size,
         and are used to check links to incomplete copies.
         """
-        self._config = config
-        self._target_config = target_config
-        self._layout = layout
-        self._target_layout = target_layout
+        self._config = resolve_copy_endpoint(config, target_config)
+        self._target_config = resolve_copy_endpoint(target_config, config)
+        self._layout = layout if self._config is config else BackupLayout(self._config)
+        self._target_layout = (
+            target_layout
+            if self._target_config is target_config
+            else BackupLayout(self._target_config)
+        )
         self._ch_config = ch_config
-        self._storage: dict = config["storage"]
-        self._target_storage: dict = target_config["storage"]
+        self._storage: dict = self._config["storage"]
+        self._target_storage: dict = self._target_config["storage"]
         self._copy_config: dict = target_config["copy"]
         self._metadata_read_threads = target_config["multiprocessing"][
             "metadata_read_threads"
@@ -1623,23 +1628,19 @@ class BackupCopier:
             )
 
         credentials = self._target_storage["credentials"]
+        endpoint_url = conf.get("endpoint_url") or credentials["endpoint_url"]
+        aws_config_file = credentials.get("aws_config_file")
         if conf.get("access_key_id"):
-            access_key_id, secret_access_key = (
-                conf["access_key_id"],
-                conf.get("secret_access_key"),
-            )
-        else:
-            access_key_id, secret_access_key = (
-                credentials["access_key_id"],
-                credentials["secret_access_key"],
-            )
+            credentials = conf
+            aws_config_file = None
 
         storage = make_storage_config(
             self._target_storage,
-            endpoint_url=conf.get("endpoint_url") or credentials["endpoint_url"],
+            endpoint_url=endpoint_url,
             bucket=conf["bucket"],
-            access_key_id=access_key_id,
-            secret_access_key=secret_access_key,
+            access_key_id=credentials.get("access_key_id"),
+            secret_access_key=credentials.get("secret_access_key"),
+            aws_config_file=aws_config_file,
         )
         return storage, _key(conf.get("path") or "").rstrip("/")
 
@@ -1691,13 +1692,19 @@ class BackupCopier:
         endpoint_url = conf.get("endpoint_url") or endpoint_url
         bucket = conf.get("bucket") or bucket
 
+        credentials: tuple[str | None, str | None] | None
+        aws_config_file = None
         if conf.get("access_key_id"):
             credentials = (conf["access_key_id"], conf.get("secret_access_key"))
         else:
-            credentials = self._get_disk_credentials(disk_name) or (
-                self._storage["credentials"]["access_key_id"],
-                self._storage["credentials"]["secret_access_key"],
-            )
+            credentials = self._get_disk_credentials(disk_name)
+            if credentials is None:
+                source_credentials = self._storage["credentials"]
+                credentials = (
+                    source_credentials["access_key_id"],
+                    source_credentials["secret_access_key"],
+                )
+                aws_config_file = source_credentials.get("aws_config_file")
 
         storage = make_storage_config(
             self._storage,
@@ -1705,6 +1712,7 @@ class BackupCopier:
             bucket=bucket,
             access_key_id=credentials[0],
             secret_access_key=credentials[1],
+            aws_config_file=aws_config_file,
         )
         return (
             storage,
@@ -2153,6 +2161,8 @@ def _storage_cache_key(storage: dict) -> tuple:
         storage_id(storage),
         credentials.get("access_key_id"),
         credentials.get("secret_access_key"),
+        credentials.get("aws_config_file") or None,
+        storage.get("_aws_config_revision"),
         json.dumps(
             {
                 name: storage.get(name, {})

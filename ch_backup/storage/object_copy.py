@@ -3,10 +3,15 @@ Copying of objects between storages.
 """
 
 import copy
+import os
 import re
+import stat
 from enum import Enum
 from typing import Any, NamedTuple
 from urllib.parse import urlparse
+
+from botocore.configloader import load_config
+from botocore.exceptions import ConfigNotFound, ConfigParseError
 
 from ch_backup.exceptions import ConfigurationError
 
@@ -72,10 +77,91 @@ def server_side_copy_possible(src_storage: dict, dst_storage: dict) -> bool:
 
     src_credentials = src_storage["credentials"]
     dst_credentials = dst_storage["credentials"]
-    return all(
+    if not all(
         src_credentials.get(key) == dst_credentials.get(key)
         for key in ("endpoint_url", "access_key_id", "secret_access_key")
+    ):
+        return False
+
+    src_file = aws_config_revision(src_storage)
+    dst_file = aws_config_revision(dst_storage)
+    if not src_file or not dst_file:
+        return not src_file and not dst_file
+    return read_aws_config(src_storage) == read_aws_config(dst_storage)
+
+
+def aws_config_revision(storage: dict) -> tuple | None:
+    """Identify an explicit regular AWS file and check any pinned revision."""
+    credentials = storage["credentials"]
+    path = credentials.get("aws_config_file")
+    if path is None or path == "":
+        return None
+    if not isinstance(path, str):
+        raise ConfigurationError(
+            "storage.credentials.aws_config_file must be a path string"
+        )
+    endpoint_url = credentials.get("endpoint_url")
+    if not isinstance(endpoint_url, str) or not endpoint_url.strip():
+        raise ConfigurationError(
+            "storage.credentials.endpoint_url is required with aws_config_file"
+        )
+    try:
+        path = os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
+        info = os.stat(path)
+        if not stat.S_ISREG(info.st_mode):
+            raise ConfigurationError(
+                "storage.credentials.aws_config_file must be a regular file"
+            )
+    except (OSError, ValueError) as error:
+        raise ConfigurationError(
+            f"storage.credentials.aws_config_file: cannot read AWS config ({type(error).__name__})"
+        ) from None
+    revision = (
+        path,
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
     )
+    expected = storage.get("_aws_config_revision")
+    if expected is not None and revision != expected:
+        raise ConfigurationError(
+            "storage.credentials.aws_config_file changed during use"
+        )
+    return revision
+
+
+def read_aws_config(storage: dict) -> dict:
+    """Read explicit AWS settings using the SDK's effective profile mapping."""
+    revision = aws_config_revision(storage)
+    assert revision is not None
+    try:
+        with open(revision[0], encoding="utf-8"):
+            pass
+        settings = load_config(revision[0])
+    except (ConfigNotFound, ConfigParseError, OSError, ValueError) as error:
+        raise ConfigurationError(
+            f"storage.credentials.aws_config_file: cannot read AWS config ({type(error).__name__})"
+        ) from None
+    if aws_config_revision(storage) != revision:
+        raise ConfigurationError(
+            "storage.credentials.aws_config_file changed during use"
+        )
+    return settings
+
+
+def validate_aws_config(storage: dict, *, reload: bool = False) -> None:
+    """Validate an explicit AWS file and pin its revision for this configuration."""
+    settings = dict(storage)
+    if reload:
+        settings.pop("_aws_config_revision", None)
+    if revision := aws_config_revision(settings):
+        settings["_aws_config_revision"] = revision
+        read_aws_config(settings)
+        storage["_aws_config_revision"] = revision
+    else:
+        storage.pop("_aws_config_revision", None)
 
 
 def make_storage_config(
@@ -84,6 +170,8 @@ def make_storage_config(
     bucket: str,
     access_key_id: str | None,
     secret_access_key: str | None,
+    *,
+    aws_config_file: str | None = None,
 ) -> dict:
     """Make storage config for a bucket, retaining non-credential settings."""
     storage = copy.deepcopy(base)
@@ -93,6 +181,10 @@ def make_storage_config(
         "access_key_id": access_key_id,
         "secret_access_key": secret_access_key,
     }
+    if aws_config_file is not None:
+        storage["credentials"]["aws_config_file"] = aws_config_file
+    else:
+        storage.pop("_aws_config_revision", None)
     # Proxy is configured for backup storage only.
     storage["proxy_resolver"] = {"uri": None, "proxy_port": None}
     return storage
