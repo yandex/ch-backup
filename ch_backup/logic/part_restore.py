@@ -6,14 +6,29 @@ from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE
 from typing import Callable
-from uuid import uuid4
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
-from ch_backup.backup.metadata import BackupMetadata, PartMetadata
+from ch_backup.backup.metadata import BackupMetadata, PartMetadata, split_part_name
 from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.util import scan_dir_files
+
+LOCAL_RESTORE_DIR = ".ch-backup-restore"
+
+
+def is_local_restore_workspace(root: Path) -> bool:
+    """Recognize the reserved staging layout, even before it contains parts."""
+    if root.name != LOCAL_RESTORE_DIR or root.is_symlink() or not root.is_dir():
+        return False
+    for entry in root.iterdir():
+        if entry.is_symlink() or not entry.is_dir():
+            return False
+        try:
+            split_part_name(entry.name)
+        except ValueError:
+            return False
+    return True
 
 
 def check_local_part(part: PartMetadata, path: str) -> None:
@@ -34,41 +49,30 @@ def check_local_part(part: PartMetadata, path: str) -> None:
         raise ClickhouseBackupError(f'Part checksum does not match backup: "{path}"')
 
 
-def _remove_staging(path: str) -> None:
-    try:
-        if os.path.islink(path):
-            os.unlink(path)
-        else:
-            shutil.rmtree(path)
-    except FileNotFoundError:
-        pass
-    except OSError as error:
-        logging.warning("Failed to remove restore staging path {}: {}", path, error)
-
-
-def _publish_local_part(staging: str, destination: str) -> None:
-    """Publish the validated part, retaining the old directory until rename succeeds."""
-    if not (os.path.islink(destination) or os.path.isdir(destination)):
-        os.rename(staging, destination)
+def _clear_workspace(root: Path) -> None:
+    """Discard staged downloads after verifying the workspace belongs to restore."""
+    if root.parent.is_symlink():
+        raise ClickhouseBackupError(
+            f"Unexpected symlink to detached directory: {root.parent}"
+        )
+    if not os.path.lexists(root):
         return
+    if not is_local_restore_workspace(root):
+        raise ClickhouseBackupError(
+            f"Unexpected contents at restore workspace path {root}. "
+            "Inspect the path and move any user-detached part aside before retrying."
+        )
 
-    previous = f"{staging}.previous"
-    os.rename(destination, previous)
-    try:
-        os.rename(staging, destination)
-    except BaseException:
-        try:
-            os.rename(previous, destination)
-        except OSError as error:
-            logging.error(
-                "Rollback of {} failed: {}. Previous part retained at {}",
-                destination,
-                error,
-                previous,
-            )
-        raise
+    shutil.rmtree(root)
 
-    _remove_staging(previous)
+
+def _publish_local_part(staging: Path, destination: Path) -> None:
+    """Remove the old detached part and publish the validated download."""
+    if destination.is_symlink():
+        destination.unlink()
+    elif destination.is_dir():
+        shutil.rmtree(destination)
+    os.rename(staging, destination)
 
 
 class LocalPartRestorer:
@@ -88,21 +92,46 @@ class LocalPartRestorer:
         self._keep_going = keep_going
         self._on_success = on_success
         self._on_error = on_error
-        self._paths: list[str] = []
-        self._completed: list[tuple[PartMetadata, str, str]] = []
+        self._preparation_errors: dict[Path, str | None] = {}
+        self._completed: list[tuple[PartMetadata, Path, Path]] = []
+
+    def _try_clear_workspace(self, root: Path) -> str | None:
+        try:
+            _clear_workspace(root)
+        except (OSError, ClickhouseBackupError) as error:
+            if not self._keep_going:
+                raise
+            message = f"Failed to clear restore workspace {root}: {error}"
+            logging.warning(message)
+            return message
+        return None
+
+    def prepare(self, detached: Path) -> str | None:
+        """Prepare each workspace once and return the reason if it cannot be used."""
+        root = detached / LOCAL_RESTORE_DIR
+        if root not in self._preparation_errors:
+            self._preparation_errors[root] = self._try_clear_workspace(root)
+        return self._preparation_errors[root]
 
     def download(self, part: PartMetadata, destination: str) -> None:
-        """Download into a unique sibling of the final directory on the same disk."""
-        staging = os.path.join(
-            os.path.dirname(destination), f".ch-backup-{uuid4().hex}"
-        )
-        self._paths.append(staging)
+        """Schedule a download into the workspace on the target disk."""
+        final = Path(destination)
+        error = self.prepare(final.parent)
+        if error is not None:
+            raise ClickhouseBackupError(error)
+        root = final.parent / LOCAL_RESTORE_DIR
+        root.mkdir(parents=True, exist_ok=True)
+        staging = root / final.name
 
         def downloaded(_part: PartMetadata) -> None:
-            self._completed.append((part, staging, destination))
+            self._completed.append((part, staging, final))
 
         self._layout.download_data_part(
-            self._backup, part, staging, callback=downloaded, on_error=self._on_error
+            self._backup,
+            part,
+            str(staging),
+            callback=downloaded,
+            on_error=self._on_error,
         )
 
     def wait(self) -> None:
@@ -113,7 +142,7 @@ class LocalPartRestorer:
         try:
             for part, staging, destination in self._completed:
                 try:
-                    check_local_part(part, staging)
+                    check_local_part(part, str(staging))
                     _publish_local_part(staging, destination)
                 except Exception as error:
                     self._on_error(part, error)
@@ -123,5 +152,6 @@ class LocalPartRestorer:
                 # A state persistence failure must propagate even with keep-going.
                 self._on_success(part)
         finally:
-            for path in self._paths:
-                _remove_staging(path)
+            for root, preparation_error in self._preparation_errors.items():
+                if preparation_error is None:
+                    self._try_clear_workspace(root)
