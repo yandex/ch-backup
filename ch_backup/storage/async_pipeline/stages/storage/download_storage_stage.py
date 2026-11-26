@@ -2,6 +2,7 @@
 Downloading object from a storage stage.
 """
 
+from inspect import signature
 from typing import Generator
 
 from ch_backup.storage.async_pipeline.base_pipeline.handler import InputHandler
@@ -26,6 +27,11 @@ class DownloadStorageStage(InputHandler):
     ) -> None:
         """Read chunks with an optional larger persistent HTTP range."""
         self._chunk_size = config["chunk_size"]
+        if range_size:
+            try:
+                signature(loader.download_part).bind_partial(range_len=range_size)
+            except (TypeError, ValueError):
+                range_size = 0
         self._range_size = range_size
         self._loader = loader
         self._remote_path = remote_path

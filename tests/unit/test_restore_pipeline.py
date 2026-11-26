@@ -76,7 +76,6 @@ def make_storage(
 
     def get_object(**kwargs):
         """Serve the requested range and enforce the pinned object identity."""
-        assert kwargs.get("IfMatch", '"version"') == '"version"'
         start, end = map(int, kwargs["Range"].removeprefix("bytes=").split("-"))
         body = DownloadBody(data[start : end + 1], fail_after if not bodies else None)
         bodies.append(body)
@@ -268,6 +267,10 @@ def test_streaming_ranges_retry_without_repeating_bytes(fail_after: int | None) 
     restored = b"".join(stage())
     stage.on_done()
     assert restored == data
+    assert all(
+        call.kwargs["IfMatch"] == '"version"'
+        for call in client.get_object.call_args_list
+    )
     assert all(body.closed for body in bodies)
     assert all(
         0 < size <= 4 for body in bodies for size in body.read_sizes if size is not None

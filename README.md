@@ -71,7 +71,7 @@ restore:
     direct_chunks: true       # Buffer only partial chunks.
     direct_write: true        # Write file payload directly across TAR chunk boundaries.
     download_range_size: 134218368  # 16 encrypted 8 MiB frames per S3 GET. Use 0 for a GET per read.
-    decrypt_threads: 2        # Threads per archive. Use auto for all CPUs in the affinity mask.
+    decrypt_threads: 2        # Threads per archive. Use auto to share the CPU budget across workers.
 ```
 
 By default, `ch-backup restore` uses two worker processes, reads 8,388,648 bytes
@@ -79,6 +79,8 @@ per chunk (8 MiB plus 40 bytes of NaCl metadata), and writes 8 MiB chunks.
 The encryption and filesystem buffers are 129 MiB each. Config files and
 `--config-parameter` override these defaults. For an existing backup, keep
 `encryption.chunk_size` equal to the value used when it was created.
+With `decrypt_threads: auto`, each archive gets its share of the CPUs allowed by
+affinity and the visible cgroup quota, with at least one thread per archive.
 Python callers can load the same defaults with `Config(path, restore=True)`.
 
 ## Restore without cloud storage
