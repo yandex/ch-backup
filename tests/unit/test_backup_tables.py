@@ -86,6 +86,7 @@ def test_restore_attaches_parts_in_source_order(tmp_path, newest_source, largest
     context.config["restore_context_path"] = str(tmp_path / "restore.json")
     context.backup_layout = layout = Mock()
     context.ch_ctl = ch_ctl = Mock()
+    ch_ctl.get_table.return_value.paths_with_disks = []
     ch_ctl.get_detached_part_path.side_effect = lambda _table, _disk, name: str(
         tmp_path / name
     )

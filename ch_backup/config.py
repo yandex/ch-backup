@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 from humanfriendly import parse_size, parse_timespan
 from loguru import logger
+from nacl.secret import SecretBox
 
 
 def _as_seconds(t: str) -> int:
@@ -34,6 +35,12 @@ def as_datetime(value: Any) -> datetime | None:
         raise ValueError(error)
     return value.astimezone(timezone.utc)
 
+
+_DEFAULT_ENCRYPTION_CHUNK = parse_size("8 MiB")
+_RESTORE_WIRE_FRAME = (
+    _DEFAULT_ENCRYPTION_CHUNK + SecretBox.NONCE_SIZE + SecretBox.MACBYTES
+)
+_RESTORE_BUFFER = parse_size("129 MiB")
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "clickhouse": {
@@ -298,7 +305,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "enabled": True,
         "type": "nacl",
         # Chunk size used when encrypting / decrypting data, in bytes.
-        "chunk_size": parse_size("8 MiB"),
+        "chunk_size": _DEFAULT_ENCRYPTION_CHUNK,
         # Buffer size, in bytes.
         "buffer_size": parse_size("32 MiB"),
         # Encryption key.
@@ -425,8 +432,27 @@ class Config:
     Config for all components
     """
 
-    def __init__(self, config_file: str) -> None:
+    def __init__(self, config_file: str, *, restore: bool = False) -> None:
+        """Load command defaults, then apply the settings supplied by the operator."""
         self._conf = copy.deepcopy(DEFAULT_CONFIG)
+        if restore:
+            self.merge(
+                {
+                    "restore": {
+                        "local_data": {
+                            "download_range_size": 16 * _RESTORE_WIRE_FRAME,
+                            "decrypt_threads": 2,
+                        }
+                    },
+                    "storage": {"chunk_size": _RESTORE_WIRE_FRAME},
+                    "filesystem": {
+                        "chunk_size": _DEFAULT_ENCRYPTION_CHUNK,
+                        "buffer_size": _RESTORE_BUFFER,
+                    },
+                    "encryption": {"buffer_size": _RESTORE_BUFFER},
+                    "multiprocessing": {"workers": 2},
+                }
+            )
         self._read_config(file_name=config_file)
 
     def _recursively_update(self, base_dict, update_dict):

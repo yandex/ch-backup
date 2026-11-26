@@ -840,6 +840,7 @@ def test_scan_detached_parts_uses_selected_backing_disk_directory(
     expected_checksum = _make_cloud_part(
         part_path, {"checksums.txt": ["store/object-key"]}
     )
+    (part_path.parent / ".ch-backup-restore" / part_path.name).mkdir(parents=True)
     table = Table(
         "db1",
         "table1",
@@ -851,7 +852,7 @@ def test_scan_detached_parts_uses_selected_backing_disk_directory(
         None,
     )
 
-    part = next(iter(ch_ctl.scan_detached_parts(table, disk_names=["object_storage"])))
+    (part,) = ch_ctl.scan_detached_parts(table, disk_names=["object_storage"])
 
     assert part.disk_name == "object_storage"
     assert part.object_storage is True

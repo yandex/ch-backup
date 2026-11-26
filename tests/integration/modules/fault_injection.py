@@ -1,6 +1,7 @@
 """Faults that must run inside the ClickHouse container."""
 
 import argparse
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -19,6 +20,7 @@ from ch_backup.clickhouse.disks import (
     ClickHouseTemporaryDisks,
 )
 from ch_backup.clickhouse.object_storage_metadata import parse_object_storage_metadata
+from ch_backup.logic.part_restore import LOCAL_RESTORE_DIR
 from ch_backup.storage.engine.s3.s3_engine import S3StorageEngine
 
 
@@ -122,6 +124,21 @@ def interrupt_inplace_copy(filename: str, arguments: list[str]) -> None:
         _run_patched_cli(arguments)
 
 
+def interrupt_local_publication(part: str, arguments: list[str]) -> None:
+    """Exit between removing the old detached part and publishing its replacement."""
+    rmtree = shutil.rmtree
+
+    def interrupt_after_removal(path, *args, **kwargs):
+        rmtree(path, *args, **kwargs)
+        if Path(path).parts[-2:] == ("detached", part):
+            staged = Path(path).parent / LOCAL_RESTORE_DIR / part
+            assert (staged / "checksums.txt").stat().st_size > 0
+            os._exit(86)
+
+    with patch("ch_backup.logic.part_restore.shutil.rmtree", interrupt_after_removal):
+        _run_patched_cli(arguments)
+
+
 def fail_part_attach(database: str, table_name: str, arguments: list[str]) -> None:
     """Let copying finish, then fail before ATTACH consumes the detached part."""
     attach = ClickhouseCTL.attach_part
@@ -154,6 +171,9 @@ if __name__ == "__main__":
     inplace = subparsers.add_parser("interrupt-inplace-copy")
     inplace.add_argument("filename")
     inplace.add_argument("arguments", nargs=argparse.REMAINDER)
+    local = subparsers.add_parser("interrupt-local-publication")
+    local.add_argument("part")
+    local.add_argument("arguments", nargs=argparse.REMAINDER)
     attach_part = subparsers.add_parser("fail-part-attach")
     attach_part.add_argument("database")
     attach_part.add_argument("table")
@@ -169,5 +189,7 @@ if __name__ == "__main__":
         drop_frozen_table(options.database, options.table, options.arguments)
     elif options.fault == "interrupt-inplace-copy":
         interrupt_inplace_copy(options.filename, options.arguments)
+    elif options.fault == "interrupt-local-publication":
+        interrupt_local_publication(options.part, options.arguments)
     else:
         fail_part_attach(options.database, options.table, options.arguments)

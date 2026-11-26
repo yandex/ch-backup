@@ -35,7 +35,7 @@ from ch_backup.clickhouse.schema import (
 )
 from ch_backup.exceptions import ClickhouseBackupError, is_broken_executor
 from ch_backup.logic.backup_manager import BackupManager
-from ch_backup.logic.part_restore import LocalPartRestorer
+from ch_backup.logic.part_restore import LOCAL_RESTORE_DIR, LocalPartRestorer
 from ch_backup.logic.storage_schema_restore import (
     StorageSchemaRestore,
     restore_disk_name,
@@ -1883,6 +1883,9 @@ class TableBackup(BackupManager):
                     on_success=downloaded,
                     on_error=download_failed,
                 )
+                for data_path, disk in table.paths_with_disks:
+                    if disk.type == "local":
+                        local_parts.prepare(Path(data_path) / "detached")
                 parts = table_meta.get_parts()
                 if context.config_root["restore"].get("largest_parts_first", True):
                     parts.sort(
@@ -2122,7 +2125,10 @@ class TableBackup(BackupManager):
         directory with different contents is preserved and the first free
         ``_tryN`` name is used instead.
         """
-        for try_no in count():
+        # Preserve the workspace path when a backup contains a user-detached
+        # directory with the same name.
+        first_try = 1 if part.name == LOCAL_RESTORE_DIR else 0
+        for try_no in count(first_try):
             restore_part = (
                 part if try_no == 0 else part.with_name(f"{part.name}_try{try_no}")
             )

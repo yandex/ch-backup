@@ -1,7 +1,6 @@
 """Metadata compatibility and publication failure boundaries."""
 
 from hashlib import md5
-from os import rename
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -73,16 +72,12 @@ def test_publication_failure_boundary(tmp_path, part, failure, keep_going, monke
     if failure in {"rename", "checksum"}:
         destination.mkdir()
         (destination / "original").write_bytes(b"keep me")
+    if failure == "state":
+        destination.symlink_to(paths[0])
     if failure == "checksum":
         (paths[0] / "checksums.txt").write_bytes(b"corrupt")
     if failure == "rename":
-
-        def fail_publication(src, dst):
-            if Path(src) == paths[0] and Path(dst) == destination:
-                raise OSError("rename")
-            rename(src, dst)
-
-        monkeypatch.setattr("ch_backup.logic.part_restore.os.rename", fail_publication)
+        monkeypatch.setattr("os.rename", Mock(side_effect=OSError("rename")))
     if failure in {"rename", "checksum"} and keep_going:
         restorer.wait()
     else:
@@ -90,9 +85,28 @@ def test_publication_failure_boundary(tmp_path, part, failure, keep_going, monke
             (OSError, RuntimeError, ClickhouseBackupError), match=failure
         ):
             restorer.wait()
-    assert destination.exists() == (failure != "wait")
-    if failure in {"rename", "checksum"}:
+    assert destination.exists() == (failure in {"checksum", "state"})
+    if failure == "checksum":
         assert (destination / "original").read_bytes() == b"keep me"
+    if failure == "state":
+        assert (destination / "checksums.txt").read_bytes() == b"checksums"
     assert paths[0].exists() == (failure == "wait")
     assert success.called == (failure == "state")
     assert error.called == (failure in {"rename", "checksum"})
+
+
+@pytest.mark.parametrize(
+    "entry", ["", ".ch-backup-restore", ".ch-backup-restore/all_1_1_0"]
+)
+def test_prepare_preserves_symlinks(tmp_path, entry):
+    detached = tmp_path / "detached"
+    part = detached / ".ch-backup-restore" / "all_1_1_0"
+    part.mkdir(parents=True)
+    link = detached / entry
+    target = link.rename(tmp_path / "target")
+    link.symlink_to(target)
+    with pytest.raises(ClickhouseBackupError, match="Unexpected"):
+        LocalPartRestorer(
+            Mock(), Mock(), keep_going=False, on_success=Mock(), on_error=Mock()
+        ).prepare(detached)
+    assert link.is_symlink() and part.is_dir()

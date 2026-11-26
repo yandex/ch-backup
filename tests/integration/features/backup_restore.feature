@@ -875,7 +875,7 @@ Feature: Backup & Restore
     TO long_names.babacaba;
     """
 
-  Scenario: A truncated local part stays private and a retry restores complete data
+  Scenario: Interrupted replacement reads the backup again and keeps a truncated part private
     Given ch-backup configuration on clickhouse01
     """
     encryption:
@@ -900,7 +900,17 @@ Feature: Backup & Restore
     name: atomic_retry
     tables: [test_db.atomic_retry]
     """
-    And we save and truncate file "data/test_db/atomic_retry/0_1_1_0/0_1_1_0.tar" in clickhouse01 backup #0
+    And we try to execute ch-backup on clickhouse02 with ATTACH failing for test_db.atomic_retry
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf restore atomic_retry --keep-going
+    """
+    Then command exits with code 0
+    When we interrupt a local restore after removing part "0_1_1_0" on clickhouse02
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf restore atomic_retry
+    """
+    Then part "0_1_1_0" of test_db.atomic_retry is not published on clickhouse02
+    When we save and truncate file "data/test_db/atomic_retry/0_1_1_0/0_1_1_0.tar" in clickhouse01 backup #0
     And we restore clickhouse backup #0 to clickhouse02
     """
     keep_going: true

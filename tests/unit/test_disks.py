@@ -1398,8 +1398,16 @@ def test_restore_keeps_copy_ownership_until_attach_succeeds(
             assert not context.restore_context.has_failed_parts()
             assert mode_file.exists()
             context.restore_context = RestoreContext(config["backup"])
+        local = Disk("unused", str(tmp_path / "unused"), "local")
+        table.paths_with_disks.append((local.path, local))
+        staged = Path(".ch-backup-restore") / part.name
+        local_detached = Path(local.path) / "detached"
+        for directory in (local_detached, detached):
+            (directory / staged).mkdir(parents=True)
         TableBackup._restore_data(context, [table_meta], manager, False, False)
 
+    assert not (local_detached / staged.parent).exists()
+    assert (detached / staged).is_dir()
     assert remove.call_count == (0 if inplace else 1)
     assert manager._ch_ctl.attach_part.call_count == 2
     assert context.restore_context.part_restored(part)

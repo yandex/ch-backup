@@ -33,21 +33,30 @@ regardless of download completion order. Saved failure details survive restores
 of other tables; a part's error is removed after that part is successfully attached.
 Only failures from the current invocation affect its exit code.
 
-Local parts are downloaded into unique `.ch-backup-*` staging directories on
-the destination disk. Each part name must be a single directory name. Nested
+Local parts are downloaded to `detached/.ch-backup-restore/<part>` on
+each destination disk. Each part name must be a single directory name. Nested
 paths in per-file backups must stay inside staging. Restore accepts early TAR
 backups that omit all padding after the last complete file.
-After all files have been written, restore checks their
-file list, recorded size and the checksum of `checksums.txt`, replaces any
-existing destination directory and publishes the part with `rename` before
-recording `DOWNLOADED` or attaching it. This does not hash every data file.
-Local parts saved as `DOWNLOADED` are downloaded again on retry. Failed downloads
-leave the existing destination untouched. During replacement the previous part
-is moved aside until publication succeeds. If the publish rename fails, restore
-moves the old part back. If that rollback fails, the error log gives its path.
-An interruption between the two renames can leave the old part in a
-`.ch-backup-*.previous` directory. If transfer workers do not finish
-normally, staging directories are retained for manual cleanup after they stop.
+After download, restore validates the file list, recorded size and checksum of
+`checksums.txt`. Download or validation failures leave the existing
+`detached/<part>` untouched. Once validation succeeds, restore removes any
+existing directory at that path and renames the staged part into place before
+recording `DOWNLOADED` or attaching it. If the destination is a symlink, restore
+removes the link itself. Any data unique to the old directory is lost when it
+is removed.
+
+Run one restore at a time for the same table and disk, even for disjoint sets
+of parts. After an interruption, wait for the process and its transfer workers
+to exit before retrying. The retry clears the staging workspace and downloads
+local parts that still need to be attached, including those marked `DOWNLOADED`.
+If the process stopped between removal and rename, this download replaces the
+missing part. Restore removes the workspace after publication. With `--keep-going`,
+a cleanup failure is logged and published parts proceed to attachment.
+
+Older releases used `.ch-backup-<uuid>` directories that cannot be matched to
+their destination automatically. After workers have stopped,
+inspect legacy `.ch-backup-<uuid>.previous` directories for old parts to recover
+before manually removing obsolete staging directories.
 
 ## Local TAR restore settings
 
@@ -61,12 +70,16 @@ restore:
     filesystem_queue_size: 4  # Items per filesystem queue.
     direct_chunks: true       # Buffer only partial chunks.
     direct_write: true        # Write file payload directly across TAR chunk boundaries.
-    download_range_size: 0    # Set a positive byte count to stream larger S3 ranges.
-    decrypt_threads: 1        # Threads per archive. Use auto for all CPUs in the affinity mask.
+    download_range_size: 134218368  # 16 encrypted 8 MiB frames per S3 GET. Use 0 for a GET per read.
+    decrypt_threads: 2        # Threads per archive. Use auto for all CPUs in the affinity mask.
 ```
 
-More decryption threads use more memory per archive. Keep `encryption.chunk_size`
-equal to the value used to create the backup.
+By default, `ch-backup restore` uses two worker processes, reads 8,388,648 bytes
+per chunk (8 MiB plus 40 bytes of NaCl metadata), and writes 8 MiB chunks.
+The encryption and filesystem buffers are 129 MiB each. Config files and
+`--config-parameter` override these defaults. For an existing backup, keep
+`encryption.chunk_size` equal to the value used when it was created.
+Python callers can load the same defaults with `Config(path, restore=True)`.
 
 ## Restore without cloud storage
 
@@ -633,6 +646,17 @@ with a warning. Only successfully uploaded detached parts are added to backup
 metadata, and an individual detached-part failure does not fail the regular
 table backup. Executor failures and termination signals still abort the backup.
 
+The local restore workspace at `detached/.ch-backup-restore` is excluded from
+detached-part backups if it is empty or contains only directories with valid
+MergeTree part names. The workspace and the part directories must all be real directories.
+A user-created directory with this exact name and layout is also
+treated as a workspace and may be removed during restore. A user-detached
+directory of the same name with other contents is eligible for backup under the
+usual disk and reason filters, even if its `checksums.txt` is missing. If a
+local part restore encounters such a directory on the destination disk, it reports
+the path and stops. With `--keep-going`, it marks parts that need this workspace
+as invalid and continues restoring other parts.
+
 Restore is also opt-in: pass `--restore-detached-parts` to a data restore.
 Without this option detached-part metadata is ignored. Enabled restores put
 the parts under the corresponding table's `detached` directory on their
@@ -642,6 +666,8 @@ directory is preserved and the part is restored with the first free
 ClickHouse-style `_tryN` suffix. A directory with matching files, size and
 checksum is treated as already restored. If the backup has no checksum,
 equality cannot be proved and `_tryN` is used.
+A backed-up directory named `.ch-backup-restore` is restored using this suffix
+convention starting at `.ch-backup-restore_try1`.
 
 ```bash
 ch-backup restore --restore-detached-parts BACKUP
