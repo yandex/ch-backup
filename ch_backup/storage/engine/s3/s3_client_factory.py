@@ -2,7 +2,7 @@
 S3 client factory.
 """
 
-import os
+import re
 import socket
 import threading
 from copy import deepcopy
@@ -15,14 +15,15 @@ import boto3
 import botocore.session
 import requests
 from botocore.config import Config
-from botocore.configloader import load_config
 from botocore.credentials import CredentialResolver, ProcessProvider
+from botocore.exceptions import BotoCoreError, CredentialRetrievalError
+from dateutil.parser import isoparse  # type: ignore[import-untyped]
 
 from ch_backup import logging
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import ConfigurationError
 from ch_backup.storage.engine.s3.s3_config import build_botocore_config
-from ch_backup.storage.object_copy import aws_config_revision, checked_aws_config_file
+from ch_backup.storage.object_copy import load_aws_config
 from ch_backup.type_hints.boto3.s3 import S3Client
 
 _MAX_CACHED_FACTORIES = 16
@@ -73,6 +74,73 @@ class S3BalancerUnknownHost(ValueError):
     """
 
 
+def _hide_signed_url_on_error(
+    exception: Exception | None = None, parsed: dict | None = None, **_kwargs: Any
+) -> None:
+    """Keep signed URLs out of transport and service errors before SDK callers see them."""
+    if isinstance(exception, BotoCoreError) and logging.contains_aws_credentials(
+        str(exception)
+    ):
+        fields = {
+            key: "<redacted>" if logging.contains_aws_credentials(str(value)) else value
+            for key, value in exception.kwargs.items()
+        }
+        raise type(exception)(**fields) from None
+    if parsed and (error := parsed.get("Error")):
+        for key, value in error.items():
+            if logging.contains_aws_credentials(str(value)):
+                error[key] = "<redacted>"
+
+
+class _StorageSession(botocore.session.Session):
+    """Use the storage's validated settings for every client in this session."""
+
+    def __init__(self, settings: dict):
+        """Bind the default profile to this storage's credential process."""
+        self._settings = settings
+        super().__init__(profile="default")
+        provider = _StorageProcessProvider("default", lambda: settings)
+        self.register_component("credential_provider", CredentialResolver([provider]))
+
+    @property
+    def full_config(self) -> dict:
+        """Return the startup snapshot, including on credential or client refresh."""
+        return self._settings
+
+
+class _StorageProcessProvider(ProcessProvider):
+    """Keep credential-process output out of SDK refresh errors and tracebacks."""
+
+    def _retrieve_credentials_using(self, credential_process):
+        """Report provider failure without including sensitive subprocess output."""
+        try:
+            data = super()._retrieve_credentials_using(credential_process)
+            for field in ("access_key", "secret_key", "token"):
+                value = data[field]
+                if field == "token" and value is None:
+                    continue
+                if not isinstance(value, str) or not re.fullmatch(r"[!-~]+", value):
+                    raise ValueError(f"Invalid {field}")
+            if data["expiry_time"] is not None:
+                expiry = isoparse(data["expiry_time"])
+                if expiry.tzinfo is None:
+                    raise ValueError("Missing timezone")
+                data["expiry_time"] = expiry.isoformat()
+            return data
+        except (
+            CredentialRetrievalError,
+            ValueError,
+            OSError,
+            AttributeError,
+            TypeError,
+            OverflowError,
+        ) as error:
+            raise CredentialRetrievalError(
+                provider=self.METHOD,
+                error_msg=f"[default] credential_process failed ({type(error).__name__})",
+            ) from None
+
+
 class S3ClientFactory:
     """
     Factory to create S3 client instances.
@@ -81,31 +149,19 @@ class S3ClientFactory:
     def __init__(self, config: dict):
         """Create a boto session for this storage's credentials."""
         credentials_config = config["credentials"]
-        self._config = config.copy()
+        self._config = config
         self._botocore_config = build_botocore_config(config)
-        session = None
-        with checked_aws_config_file(self._config) as path:
-            if path:
-                session = botocore.session.get_session()
-                session.set_config_variable("config_file", path)
-                file_config = load_config(path)
-                profiles = file_config["profiles"]
-                profile = "default"
-                if "credential_process" not in profiles.get(profile, {}):
-                    profile = session.get_config_variable("profile") or profile
-                if "credential_process" in profiles.get(profile, {}):
-                    session.set_config_variable("profile", profile)
-                    session.set_config_variable("credentials_file", os.devnull)
-                    provider = ProcessProvider(profile, lambda: file_config)
-                    session.register_component(
-                        "credential_provider", CredentialResolver([provider])
-                    )
-                session.full_config  # pylint: disable=pointless-statement
+        settings = load_aws_config(credentials_config, config.get("_aws_config"))
         self._s3_session = boto3.session.Session(
+            botocore_session=_StorageSession(settings) if settings else None,
             aws_access_key_id=credentials_config["access_key_id"],
             aws_secret_access_key=credentials_config["secret_access_key"],
             region_name=self._config["boto_config"]["region_name"],
-            botocore_session=session,
+        )
+
+        self._s3_session.events.register("after-call.s3", _hide_signed_url_on_error)
+        self._s3_session.events.register(
+            "after-call-error.s3", _hide_signed_url_on_error
         )
 
     def _resolve_proxies(
@@ -164,14 +220,11 @@ class S3ClientFactory:
                 )
             )
 
-        aws_config_revision(self._config)
-        client = self._s3_session.client(
+        return self._s3_session.client(
             service_name="s3",
             endpoint_url=credentials_config["endpoint_url"],
             config=boto_config,
         )
-        aws_config_revision(self._config)
-        return client
 
 
 class S3ClientCachedFactory:
@@ -224,9 +277,6 @@ class S3ClientCachedFactory:
 def get_cached_s3_client_factory(config: dict) -> S3ClientCachedFactory:
     """Return the process-local factory shared by engines with an equal config."""
     client_ttl = _validate_client_ttl(config["client_ttl"])
-    revision = aws_config_revision(config)
-    if revision != config.get("_aws_config_revision"):
-        config = {**config, "_aws_config_revision": revision}
     with _FACTORIES_LOCK:
         for index, (cached_config, factory) in enumerate(_FACTORIES):
             if config == cached_config:

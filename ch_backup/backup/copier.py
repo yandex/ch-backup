@@ -75,7 +75,6 @@ from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecP
 from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
 from ch_backup.storage.engine.s3 import S3RetryingError
-from ch_backup.storage.engine.s3.s3_config import resolve_copy_endpoint
 from ch_backup.storage.metadata_archive import (
     MetadataArchiveWriter,
     MetadataFiles,
@@ -154,12 +153,6 @@ class BackupCopier:
         Target table listings map (backup, database, table) to part, file and size,
         and are used to check links to incomplete copies.
         """
-        source = resolve_copy_endpoint(config, target_config)
-        target = resolve_copy_endpoint(target_config, config)
-        if source is not config:
-            config, layout = source, BackupLayout(source)
-        if target is not target_config:
-            target_config, target_layout = target, BackupLayout(target)
         self._config = config
         self._target_config = target_config
         self._layout = layout
@@ -380,6 +373,17 @@ class BackupCopier:
         if cutoff is not None:
             logging.info(
                 "Copy target deduplication window lower bound: {}", cutoff.isoformat()
+            )
+        credentials = [
+            storage["credentials"]
+            for storage in (self._storage, self._target_storage)
+            if storage["type"] == "s3"
+        ]
+        if any(c.get("aws_config_file") for c in credentials) and not all(
+            c.get("endpoint_url") for c in credentials
+        ):
+            raise ConfigurationError(
+                "Copy with aws_config_file requires explicit S3 endpoints for source and target"
             )
         if storage_id(self._storage) == storage_id(self._target_storage) and _key(
             self._config["backup"]["path_root"]
@@ -2162,11 +2166,15 @@ def _storage_cache_key(storage: dict) -> tuple:
         credentials.get("access_key_id"),
         credentials.get("secret_access_key"),
         credentials.get("aws_config_file") or None,
-        storage.get("_aws_config_revision"),
         json.dumps(
             {
                 name: storage.get(name, {})
-                for name in ("boto_config", "module_config", "proxy_resolver")
+                for name in (
+                    "boto_config",
+                    "module_config",
+                    "proxy_resolver",
+                    "_aws_config",
+                )
             },
             sort_keys=True,
         ),

@@ -16,12 +16,7 @@ from time import sleep
 from typing import TYPE_CHECKING, Any, Callable, Iterator, NamedTuple, TypeVar
 
 import requests
-from botocore.exceptions import (
-    BotoCoreError,
-    ClientError,
-    CredentialRetrievalError,
-    HTTPClientError,
-)
+from botocore.exceptions import BotoCoreError, ClientError
 from urllib3.exceptions import HTTPError
 from urllib3.util.ssl_match_hostname import CertificateError as Urllib3CertificateError
 
@@ -359,18 +354,6 @@ class S3RetryMeta(ABCMeta):
                 requests.HTTPError,
                 requests.exceptions.ChunkedEncodingError,
             ) as e:
-                if (
-                    isinstance(e, CredentialRetrievalError)
-                    and e.kwargs.get("provider") == "custom-process"
-                ):
-                    e = CredentialRetrievalError(
-                        provider="custom-process", error_msg="credential_process failed"
-                    )
-                if isinstance(e, HTTPClientError) and any(
-                    logging.is_sensitive_header_error(error)
-                    for error in _exception_chain(e)
-                ):
-                    e = HTTPClientError(error="Invalid S3 request header")
                 if isinstance(e, ClientError) and not is_retryable_s3_error(e):
                     raise
                 if is_certificate_error(e):

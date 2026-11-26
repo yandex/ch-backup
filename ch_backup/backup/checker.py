@@ -178,9 +178,7 @@ class BackupChecker:
     def __init__(
         self, config: Config, deep: bool, workers: int, tmp_dir: str | None = None
     ) -> None:
-        self._config = config.derive(
-            patch={"multiprocessing": {"workers": 0}}, for_copy_target=False
-        )
+        self._config = config.derive(patch={"multiprocessing": {"workers": 0}})
         self._deep = deep
         self._workers = workers
         self._tmp_dir = tmp_dir

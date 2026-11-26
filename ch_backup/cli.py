@@ -49,8 +49,7 @@ from .config import DEFAULT_CONFIG, Config
 from .logic.partial_restore import PartialRestoreFilter
 from .params import JsonParamType, KeyValues, List, String, TimeSpan
 from .profile import profile
-from .storage.engine.s3.s3_config import resolve_copy_endpoint
-from .storage.object_copy import parse_server_side_copy_mode, validate_aws_config
+from .storage.object_copy import parse_server_side_copy_mode
 from .util import (
     chown_dir_contents,
     drop_privileges,
@@ -1172,7 +1171,6 @@ def copy_command(
         target_cfg = ch_backup.config.derive(
             target_config,
             _build_cli_cfg_from_config_parameters(target_config_parameters),
-            for_copy_target=True,
         )
         target_cfg.merge({"copy": copy_config})
         # Validate before resolving LAST, which already lists the source storage.
@@ -1185,11 +1183,6 @@ def copy_command(
             if name == "LAST" and CopyScope.FILES in parse_copy_scopes(
                 target_cfg["copy"]["scopes"]
             ):
-                if target_cfg["storage"]["type"] == "s3":
-                    validate_aws_config(target_cfg["storage"])
-                source_config = resolve_copy_endpoint(ch_backup.config, target_cfg)
-                if source_config is not ch_backup.config:
-                    ch_backup = ClickhouseBackup(source_config)
                 name = _validate_and_resolve_name(
                     ctx,
                     ch_backup,
