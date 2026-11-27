@@ -10,6 +10,11 @@ from typing import Iterable
 from ch_backup.util import scan_dir_files
 
 
+def tar_read_buffer_size(chunk_size: int) -> int:
+    """Fit one input chunk after the largest partial 512-byte header it can leave."""
+    return chunk_size + BLOCKSIZE - math.gcd(chunk_size, BLOCKSIZE)
+
+
 def calc_aligned_files_size_scan(
     base_path: Path, exclude_file_names: list[str] | None = None, alignment: int = 1
 ) -> int:

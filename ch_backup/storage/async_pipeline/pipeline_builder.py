@@ -12,7 +12,9 @@ from pypeln.thread.api.from_iterable import from_iterable
 from pypeln.thread.queue import IterableQueue
 from pypeln.thread.supervisor import Supervisor
 
+from ch_backup.calculators import tar_read_buffer_size
 from ch_backup.compression import get_compression
+from ch_backup.config import Config
 from ch_backup.encryption import get_encryption
 from ch_backup.storage.async_pipeline import thread_flat_map
 from ch_backup.storage.async_pipeline.base_pipeline.input import thread_input
@@ -62,9 +64,12 @@ class PipelineBuilder:
     build_* functions can be chained.
     """
 
-    def __init__(self, config: dict, *, local_restore: bool = False) -> None:
+    def __init__(self, config: Config | dict, *, local_restore: bool = False) -> None:
         """Build stages with optional local TAR restore settings."""
         self._config = config
+        self._metadata_restore = (
+            isinstance(config, Config) and config.restore and not local_restore
+        )
         self._restore_options = local_restore_options(config) if local_restore else {}
         self._stages: list[PypelnStage] = []
         # Process-wide pypeln setting, set per pipeline since spawned workers do not inherit it.
@@ -235,6 +240,8 @@ class PipelineBuilder:
 
         crypto = get_encryption(stage_config["type"], stage_config)
         chunk_size += crypto.metadata_size()
+        if self._metadata_restore:
+            buffer_size = min(buffer_size, chunk_size)
 
         self.append(
             thread_flat_map(
@@ -362,13 +369,20 @@ class PipelineBuilder:
         )
         return self
 
+    def _tar_buffer_size(self, config: dict) -> int:
+        """A metadata reader needs one input chunk plus at most a partial TAR header."""
+        limit = config["buffer_size"]
+        if self._metadata_restore:
+            return min(limit, tar_read_buffer_size(config["chunk_size"]))
+        return limit
+
     def build_write_files_stage(self, dir_path: Path) -> "PipelineBuilder":
         """
         Build writing files to local filesystem stage.
         """
         stage_config = self._config[WriteFilesStage.stype]
 
-        buffer_size = stage_config["buffer_size"]
+        buffer_size = self._tar_buffer_size(stage_config)
         chunk_size = stage_config["chunk_size"]
         queue_limit = self._restore_options.get(
             "filesystem_queue_size", stage_config["queue_size"]
@@ -405,7 +419,7 @@ class PipelineBuilder:
         Build unpacking data tarball stage.
         """
         stage_config = self._config[WriteFilesStage.stype]
-        buffer_size = stage_config["buffer_size"]
+        buffer_size = self._tar_buffer_size(stage_config)
         chunk_size = stage_config["chunk_size"]
         queue_size = stage_config["queue_size"]
 

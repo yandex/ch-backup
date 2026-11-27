@@ -102,6 +102,8 @@ class ClickhouseBackup:
     @staticmethod
     def _validate_config(config: Config) -> None:
         """Validate operation settings and explicit destructive policies."""
+        if isinstance(config, Config):
+            config.validate_restore_buffers()
         local_restore_options(config)
         if not isinstance(config["backup"].get("delete_unreadable", False), bool):
             raise ValueError("backup.delete_unreadable must be true or false")

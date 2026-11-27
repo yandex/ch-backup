@@ -250,6 +250,8 @@ class StorageLoader:
         compression: bool = False,
         callback: Callable | None = None,
         on_error: Callable[[BaseException], None] | None = None,
+        *,
+        local_part: bool = True,
     ) -> None:
         """
         Download file to local filesystem.
@@ -260,6 +262,7 @@ class StorageLoader:
             is_async=is_async,
             encryption=encryption,
             compression=compression,
+            local_part=local_part,
             callback=callback,
             on_error=on_error,
         )
