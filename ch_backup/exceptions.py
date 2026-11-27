@@ -3,6 +3,9 @@ Errors specific to ch-backup.
 """
 
 from concurrent.futures import BrokenExecutor
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Iterator
 
 
 def is_broken_executor(error: BaseException) -> bool:
@@ -71,3 +74,30 @@ class TerminatingSignal(BaseException):
     Derived from BaseException to avoid unintentional catching,
     for example, by retrying operations.
     """
+
+
+_deferred_signals: ContextVar[list[int] | None] = ContextVar(
+    "deferred_signals", default=None
+)
+
+
+def interrupt(signum: int) -> None:
+    """Deliver a termination signal after an active staging cleanup has finished."""
+    pending = _deferred_signals.get()
+    if pending is None:
+        raise TerminatingSignal(f"Execution was interrupted by the signal {signum}")
+    if not pending:
+        pending.append(signum)
+
+
+@contextmanager
+def defer_termination_signals() -> Iterator[None]:
+    """Keep repeated termination signals from interrupting a critical drain."""
+    pending: list[int] = []
+    token = _deferred_signals.set(pending)
+    try:
+        yield
+    finally:
+        _deferred_signals.reset(token)
+        if pending:
+            interrupt(pending[0])

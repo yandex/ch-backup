@@ -365,7 +365,7 @@ Behavior and limitations:
   encryption of data and schema. DDL, access control, named collections and UDF definitions
   retain their encryption. The public JSON exposes names, paths, sizes, checksums, deduplication
   links, labels and failure messages; do not put secrets in labels.
-- Backup data is copied as is, without decryption. New backups can be copied with
+- By default, backup data is copied as is, without decryption. New backups can be copied with
   `encryption.type=nacl` and no `encryption.key` configured on either side. Encryption settings
   (`encryption.type`, `encryption.chunk_size`, and keys when provided) and `compression.type`
   must match between the copy configs. Restore still needs the original encryption key.
@@ -376,6 +376,22 @@ Behavior and limitations:
   the file list in the selected backup without reading the owner's metadata.
   To start an independent series of keyless-copyable backups,
   set `backup.deduplication_start_time` to the beginning of the series when enabling the new format.
+- To export a backup under a new key, set `copy.reencrypt: true` in the target config
+  or pass `--target-config-parameter copy.reencrypt true`. Use NaCl on both sides
+  with different keys, the same chunk size and the same compression type. The
+  target's cloud data encryption must use the target backup key, type and chunk size.
+  Export encrypts plaintext files and reencrypts encrypted files, including data
+  materialized from linked parts. An export rejects already encrypted cold objects
+  and detached parts on object-storage disks. The storage service must support conditional PUTs for ownership records.
+  Older botocore versions send the same signed conditional header.
+- For a staged export, run `--scope files` first. After it succeeds, the original
+  backup files and source backup key are no longer needed by this export.
+  Keep the original disk objects and their read credentials until
+  `--scope cloud_storage` succeeds and the destination backup reaches `created`.
+  Restore uses the target key. Exported cold objects are encrypted, so restore
+  uses `restore.cloud_storage.decryption_staging`; in-place cloud restore is unavailable.
+  A subsequent ordinary copy preserves the export's encryption metadata and key
+  and materializes its dependencies without deduplicating against target backups.
 - `copy.server_side_copy_mode` selects `strict`, `auto` (the default) or `disabled`. In `auto`, objects are copied
   on the server side if both buckets belong to the same S3 service and are accessible with the same
   credentials; otherwise, data is streamed through ch-backup. `disabled` always streams objects.
@@ -385,7 +401,7 @@ Behavior and limitations:
 - `copy.server_side_copy_mode: strict` forbids streaming objects through ch-backup. If an object cannot
   be copied on the server side, it is reported as failed; `--keep-going` continues independent
   objects and backups, but the command still exits with an error. The mode is incompatible with
-  `copy.cloud_storage.encrypt_data=true`. Already encrypted objects can be copied unchanged.
+  both `copy.cloud_storage.encrypt_data=true` and `copy.reencrypt=true`. Already encrypted objects can be copied unchanged.
   Reading, rewriting and publishing backup metadata still uses ch-backup.
 - The copy becomes valid (gets the state `created`) only after all its data is copied. If copying is
   interrupted, the copy remains in the state `creating` or `failed`, and the next run of the command
@@ -459,7 +475,13 @@ Behavior and limitations:
 - Copy acquires the configured source and target locks through completion, including retries and
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
-  Locking remains optional for ordinary operations; local file locks are exclusive.
+  Copies under the same OS account and temporary directory also exclude concurrent local writes
+  to the same destination prefix. When hosts or workers can share a cold prefix, configure the
+  same ZooKeeper lock for those writers, including ordinary copies and exports across different
+  backup roots. Both copy modes reserve the cold prefix using its S3 directory object
+  (the key ending in `/`). It identifies the owning backup repository and backup path.
+  Deleting and recreating a backup at the same location can reuse its prefix. For a different
+  owner, or a nonempty legacy prefix without verifiable ownership, choose a fresh cold prefix.
 - Set `multiprocessing.metadata_read_threads` in the target configuration to control parallel
   source and target light-metadata reads at copy startup (default: `4`, positive integer).
   Each batch holds at most this many reads; set `1` for sequential reading.
@@ -528,8 +550,12 @@ Behavior and limitations:
   endpoint, bucket and credentials; disks without static credentials use the storage SDK's
   normal environment/provider chain. Overriding the staging endpoint or bucket requires both
   `access_key_id` and `secret_access_key`. The staging path is exclusive to one restore and must
-  not overlap the encrypted source prefix in the same bucket, because ch-backup removes everything
-  below it before and after restore. Reserve staging capacity for the full restored cloud-storage
+  not overlap any source prefix in the same bucket. Restore workers keep an ownership token in
+  `clickhouse.tmp_path/decryption-staging/`. The next restore using the same local state and
+  staging location removes plaintext left by a crashed worker under its owned prefix. Keep this
+  local state between runs. Use a dedicated staging bucket that has never had versioning enabled.
+  Staging credentials need `s3:GetBucketVersioning`, `s3:ListBucketMultipartUploads` and
+  `s3:AbortMultipartUpload` to reclaim incomplete plaintext uploads. Other workers' prefixes remain isolated. Reserve staging capacity for the full restored cloud-storage
   data volume. Decryption and downloading disk metadata a second time make this restore slower than
   an unencrypted cloud-data restore.
   To use a separate worker, provide source endpoint, bucket, path and credentials explicitly;

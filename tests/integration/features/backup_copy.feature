@@ -1249,3 +1249,77 @@ Feature: Copy backups to another storage
     Then clickhouse02 has same schema as clickhouse01
     And we got same clickhouse data at clickhouse01 clickhouse02
     And clickhouse01 has same named collections as clickhouse02
+
+  @require_version_24.9
+  Scenario Outline: Restore a reencrypted export after removing the source
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE export_db;
+    CREATE TABLE export_db.local_data (n UInt32) ENGINE = MergeTree ORDER BY n;
+    CREATE TABLE export_db.cold_data (n UInt32) ENGINE = MergeTree ORDER BY n SETTINGS storage_policy = 's3';
+    INSERT INTO export_db.local_data VALUES (1), (2);
+    INSERT INTO export_db.cold_data VALUES (3), (4);
+    CREATE NAMED COLLECTION export_collection AS password = 'export-private-value';
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: export-base
+    copy_cloud_storage_data: <embedded>
+    """
+    And we have executed queries on clickhouse01
+    """
+    INSERT INTO export_db.local_data VALUES (10);
+    INSERT INTO export_db.cold_data VALUES (20);
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: export-next
+    copy_cloud_storage_data: <embedded>
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    storage:
+      credentials:
+        bucket: ch-backup-copy
+    encryption:
+      key: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    """
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy export-next <scope> \
+        --target-config-parameter copy.reencrypt true \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-config-parameter encryption.key '"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' \
+        --target-cloud-storage-bucket cloud-storage-02 --target-cloud-storage-path export
+    """
+    And we delete all objects in s3 bucket ch-backup
+    And we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf \
+        --config-parameter storage.credentials.bucket '"missing-bucket"' \
+        --config-parameter encryption.key null \
+        copy export-next --scope cloud_storage \
+        --target-config-parameter copy.reencrypt true \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-config-parameter encryption.key '"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' \
+        --target-cloud-storage-bucket cloud-storage-02 --target-cloud-storage-path export
+    """
+    And we delete all objects in s3 bucket cloud-storage-01
+    And we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01
+    And clickhouse01 has same named collections as clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT
+        (SELECT sum(n) FROM export_db.local_data),
+        (SELECT sum(n) FROM export_db.cold_data)
+    """
+    Then we get response
+    """
+    13	27
+    """
+
+    Examples:
+      | embedded | scope         |
+      | false    | --scope files |
+      | true     |               |

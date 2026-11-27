@@ -18,6 +18,7 @@ from ch_backup.backup.metadata import (
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database, FrozenPart, Table
 from ch_backup.config import as_datetime
+from ch_backup.encryption import get_cloud_storage_data_encryption_metadata
 from ch_backup.exceptions import StorageError
 from ch_backup.util import Slotted, sql_string_literal, utcnow
 
@@ -149,6 +150,13 @@ def collect_dedup_info(
         if backup.schema_only:
             continue
 
+        if backup.copy_encryption is not None:
+            encryption = context.config_root["encryption"]
+            if not encryption.get("key") or (
+                backup.copy_encryption.get("target")
+                != get_cloud_storage_data_encryption_metadata(encryption)
+            ):
+                continue
         dedup_backups.append(backup)
 
     _populate_dedup_info(

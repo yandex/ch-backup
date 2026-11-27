@@ -17,6 +17,7 @@ from ch_backup import logging
 from ch_backup.backup.checker_archive import (
     CloudFile,
     LegacyDisk,
+    cloud_table_paths,
     files_of_parts,
     read_legacy_files,
 )
@@ -51,7 +52,7 @@ from ch_backup.exceptions import (
 )
 from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.engine.s3 import S3RetryingError
-from ch_backup.util import escape_metadata_file_name, list_dir_files, scan_dir_files
+from ch_backup.util import list_dir_files, scan_dir_files
 
 
 class BackupCheckResult(NamedTuple):
@@ -843,19 +844,6 @@ def _missing(names: list[str], statements: list[tuple[str, str]]) -> list[str]:
     )
 
 
-def _table_paths(table: TableMetadata) -> set[str]:
-    """
-    Return possible paths of a table on disk, as ClickHouse lays them out.
-    """
-    paths = {
-        f"data/{escape_metadata_file_name(table.database)}/"
-        f"{escape_metadata_file_name(table.name)}"
-    }
-    if table.uuid:
-        paths.add(f"store/{table.uuid[:3]}/{table.uuid}")
-    return paths
-
-
 def _differing_files(
     found: Mapping[str, Mapping[str, object]],
     files_of_backups: Iterable[dict[str, tuple[str, ...]]],
@@ -942,7 +930,7 @@ def _entries(backup: BackupMetadata) -> list[tuple]:
     """
     entries = []
     for table in backup.get_tables():
-        table_paths = _table_paths(table)
+        table_paths = cloud_table_paths(table)
         for part in table.get_parts():
             valid = (
                 isinstance(part.checksum, str),

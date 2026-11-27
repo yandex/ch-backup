@@ -43,7 +43,10 @@ from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner, select_replic
 from ch_backup.clickhouse.models import Database, Table
 from ch_backup.clickhouse.part_checksums import CLICKHOUSE_BINARY
 from ch_backup.config import Config, as_datetime
-from ch_backup.encryption import validate_cloud_storage_data_encryption_config
+from ch_backup.encryption import (
+    validate_cloud_storage_data_encryption_config,
+    validate_export_encryption,
+)
 from ch_backup.exceptions import (
     BackupNotFound,
     ClickhouseBackupError,
@@ -368,6 +371,16 @@ class ClickhouseBackup:
         """
         logging.info(f"Restore sources: {sources}")
         self._context.backup_meta = self._get_backup(backup_name)
+        export = self._context.backup_meta.copy_encryption
+        if export is not None:
+            if not self._context.backup_layout.export_is_published(
+                self._context.backup_meta
+            ):
+                raise ClickhouseBackupError(
+                    f"Export of backup {backup_name} is incomplete"
+                )
+            if any(vars(sources).values()):
+                validate_export_encryption(self._config, export)
         if (
             sources.data
             and not skip_cloud_storage

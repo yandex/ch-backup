@@ -21,9 +21,8 @@ from ch_backup.backup.checker import (
     _ObjectCheckResult,
     _skipped_data,
     _stored_objects,
-    _table_paths,
 )
-from ch_backup.backup.checker_archive import files_of_parts
+from ch_backup.backup.checker_archive import cloud_table_paths, files_of_parts
 from ch_backup.backup.metadata import BackupMetadata, TableMetadata
 from ch_backup.backup.metadata.table_metadata import DataSkippedReason
 from ch_backup.clickhouse.models import Database
@@ -581,7 +580,7 @@ def test_files_of_table_are_taken_from_disk_metadata_of_all_tables() -> None:
     found = files_of_parts(files, {"all_1_1_0"}, {"store/abc/abcdef"})
 
     assert found == {"all_1_1_0": {"data.bin": b"own"}}
-    assert _table_paths(TableMetadata("db", "t-1", "MergeTree", "abcdef")) == {
+    assert cloud_table_paths(TableMetadata("db", "t-1", "MergeTree", "abcdef")) == {
         "data/db/t%2D1",
         "store/abc/abcdef",
     }

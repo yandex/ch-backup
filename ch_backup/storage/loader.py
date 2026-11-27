@@ -22,15 +22,24 @@ class StorageLoader:
     execution.
     """
 
-    def __init__(self, config):
+    def __init__(self, config, *, use_threads=False):
+        """Create the executor for this loader's transfers."""
         self._config = config
         self._engine: PipeLineCompatibleStorageEngine | None = None
-        self._ploader = PipelineExecutor(config)
+        self._ploader = PipelineExecutor(config, use_threads=use_threads)
 
     def _get_engine(self) -> PipeLineCompatibleStorageEngine:
         if self._engine is None:
             self._engine = get_storage_engine(self._config["storage"])
         return self._engine
+
+    def finish_staging_writes(self) -> None:
+        """Wait for staging writers before removing their objects."""
+        self._ploader.finish_staging_writes()
+
+    def claim_object(self, remote_path: str, data: bytes) -> None:
+        """Conditionally publish an immutable ownership record."""
+        self._get_engine().claim_object(remote_path, data)
 
     # pylint: disable=too-many-positional-arguments
     def upload_data(
@@ -283,12 +292,18 @@ class StorageLoader:
         is_async: bool = False,
         callback: Callable | None = None,
         on_error: Callable[[BaseException], None] | None = None,
+        *,
+        source_encryption: dict | None = None,
     ) -> None:
         """
         Copy object from one storage to another as is.
         """
         self._ploader.copy_object(
-            entry, is_async=is_async, callback=callback, on_error=on_error
+            entry,
+            is_async=is_async,
+            callback=callback,
+            on_error=on_error,
+            source_encryption=source_encryption,
         )
 
     def wait(self, keep_going: bool = False) -> None:

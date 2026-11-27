@@ -4,10 +4,14 @@ Lock manager logic
 
 import os
 import socket
+import stat
 import sys
 from contextlib import ExitStack, contextmanager
-from fcntl import LOCK_EX, flock
+from fcntl import LOCK_EX, LOCK_NB, flock
 from functools import partial
+from hashlib import sha256
+from pathlib import Path
+from tempfile import gettempdir
 from types import TracebackType
 from typing import Any, Callable, Iterator, Sequence
 
@@ -17,7 +21,45 @@ from kazoo.protocol.paths import normpath
 
 from ch_backup import logging
 from ch_backup.config import Config
+from ch_backup.exceptions import StorageError
 from ch_backup.zookeeper.zookeeper import ZookeeperClient, ZookeeperCTL
+
+
+@contextmanager
+def local_copy_locks(
+    locations: set[tuple], *, persistent: bool = False
+) -> Iterator[None]:
+    """Exclude local writers; wait on persistent locks used to allocate new prefixes."""
+    if not locations:
+        yield
+        return
+    directory = Path(gettempdir()) / f"ch-backup-copy-{os.getuid()}"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    info = directory.lstat()
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.getuid()
+        or info.st_mode & 0o077
+    ):
+        raise StorageError(f"Unsafe copy lock directory {directory}")
+    with ExitStack() as locks:
+        for name in sorted(
+            sha256(repr(location).encode()).hexdigest() for location in locations
+        ):
+            path = directory / name
+            fd = os.open(path, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            locks.callback(os.close, fd)
+            try:
+                flock(fd, LOCK_EX if persistent else LOCK_EX | LOCK_NB)
+                if not os.path.samestat(os.stat(path), os.fstat(fd)):
+                    raise BlockingIOError
+            except (BlockingIOError, FileNotFoundError) as error:
+                raise StorageError(
+                    "Conflicting copy parameters: target prefix is in use"
+                ) from error
+            if not persistent:
+                locks.callback(path.unlink)
+        yield
 
 
 @contextmanager

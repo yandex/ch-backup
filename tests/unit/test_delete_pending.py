@@ -590,7 +590,7 @@ def test_legacy_adoption_refuses_unknown_or_conflicting_ownership(
     elif obstacle == "lock":
         getattr(backup, "_context").lock_conf = {"zk_flock": False}
     else:
-        storage.upload_data.side_effect = StorageError("S3 unavailable")
+        storage.claim_object.side_effect = StorageError("S3 unavailable")
     before = objects.copy()
     with pytest.raises(StorageError):
         backup.adopt_cloud_storage("legacy-backup")
@@ -618,3 +618,19 @@ def test_cloud_deletion_requires_ownership_before_touching_payload(
     assert objects == before
     storage.delete_files.assert_not_called()
     unfreeze.assert_not_called()
+
+
+def test_parallel_alias_claim_keeps_first_cloud_owner(pending_context):
+    """A contender that listed an empty prefix cannot replace a concurrent owner."""
+    _, layout, storage, objects = pending_context
+    claim = storage.claim_object.side_effect
+    path = "ch_backup/new_owner/.cloud_storage_owner.json"
+
+    def acquire_other_owner(key, data):
+        objects[key] = json.dumps({"version": 1, "backup_name": "new-owner"})
+        return claim(key, data)
+
+    storage.claim_object.side_effect = acquire_other_owner
+    with pytest.raises(StorageError, match="Conflicting"):
+        layout.claim_cloud_storage("new_owner")
+    assert json.loads(objects[path])["backup_name"] == "new-owner"

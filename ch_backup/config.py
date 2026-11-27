@@ -135,6 +135,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "kill_old_freeze_queries": True,
     },
     "copy": {
+        "reencrypt": False,
         "scopes": ["files", "cloud_storage"],
         "only_with_data": True,
         # Independent target window for local parts; zero preserves source-link reuse only.
