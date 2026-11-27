@@ -287,7 +287,7 @@ class CopyContext:
             raise ValueError("Files manifest is incomplete or damaged")
         return entries
 
-    def flush(self, force: bool = False) -> None:
+    def flush(self, force: bool = False, *, required: bool = False) -> None:
         """
         Save buffered records once enough of them or enough time has accumulated.
 
@@ -313,6 +313,8 @@ class CopyContext:
                 try:
                     self._engine.upload_file(target.name, path)
                 except Exception as e:
+                    if required:
+                        raise
                     logging.warning("Failed to save copy context {}: {}", path, e)
                     return
             self._buffer.acknowledge_uploaded()

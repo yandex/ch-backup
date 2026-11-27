@@ -129,6 +129,14 @@ class PipeLineCompatibleStorageEngine(StorageEngine):
         """
         pass
 
+    def require_unversioned_staging(self) -> None:
+        """Check that deleting plaintext keys permanently removes their content."""
+        raise NotImplementedError
+
+    def abort_multipart_uploads(self, prefix: str) -> None:
+        """Remove unfinished uploads below an exclusively owned staging prefix."""
+        raise NotImplementedError
+
     def claim_object(self, remote_path: str, data: bytes) -> None:
         """Reserve an object atomically or verify an existing identical reservation."""
         raise NotImplementedError

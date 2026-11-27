@@ -419,9 +419,7 @@ class BackupMetadata:
             backup.copy_scopes = {}
             copy_meta = meta.get("copy") or {}
             backup.copy_encryption = copy_meta.get("encryption")
-            backup.copy_reencrypted = copy_meta.get(
-                "reencrypted", backup.copy_encryption is not None
-            )
+            backup.copy_reencrypted = copy_meta.get("reencrypted", False)
             backup.files_manifest = copy_meta.get("files_manifest")
             for scope in CopyScope:
                 with suppress(ValueError):

@@ -68,6 +68,18 @@ class S3BalancerUnknownHost(ValueError):
     """
 
 
+def _prepare_conditional_put(params, model, context, **_kwargs):
+    """Carry IfNoneMatch through SDK versions whose PutObject model lacks it."""
+    if "IfNoneMatch" in params and "IfNoneMatch" not in model.input_shape.members:
+        context["ch_backup_if_none_match"] = params.pop("IfNoneMatch")
+
+
+def _add_conditional_header(params, context, **_kwargs):
+    """Attach the conditional header before botocore signs the request."""
+    if "ch_backup_if_none_match" in context:
+        params["headers"]["If-None-Match"] = context["ch_backup_if_none_match"]
+
+
 class S3ClientFactory:
     """
     Factory to create S3 client instances.
@@ -81,6 +93,13 @@ class S3ClientFactory:
             aws_access_key_id=credentials_config["access_key_id"],
             aws_secret_access_key=credentials_config["secret_access_key"],
             region_name=self._config["boto_config"]["region_name"],
+        )
+
+        self._s3_session.events.register(
+            "before-parameter-build.s3.PutObject", _prepare_conditional_put
+        )
+        self._s3_session.events.register(
+            "before-call.s3.PutObject", _add_conditional_header
         )
 
     def _resolve_proxies(

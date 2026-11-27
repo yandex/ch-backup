@@ -17,7 +17,6 @@ from subprocess import PIPE, Popen
 from types import TracebackType
 from typing import IO, Any, Callable, Iterator, Literal, Sequence
 from urllib.parse import urlparse
-from uuid import uuid4
 
 import xmltodict
 
@@ -465,7 +464,9 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
                 source_path,
                 self._disks[disk_name],
             )
-            staging_path = os.path.join(staging_path, uuid4().hex)
+            staging_path = self._decryption.allocate_staging(
+                staging_storage, staging_path
+            )
             self._decryption.decrypt(
                 backup_meta,
                 disk_name,

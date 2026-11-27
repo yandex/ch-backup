@@ -22,15 +22,20 @@ class StorageLoader:
     execution.
     """
 
-    def __init__(self, config):
+    def __init__(self, config, *, use_threads=False):
+        """Create the executor for this loader's transfers."""
         self._config = config
         self._engine: PipeLineCompatibleStorageEngine | None = None
-        self._ploader = PipelineExecutor(config)
+        self._ploader = PipelineExecutor(config, use_threads=use_threads)
 
     def _get_engine(self) -> PipeLineCompatibleStorageEngine:
         if self._engine is None:
             self._engine = get_storage_engine(self._config["storage"])
         return self._engine
+
+    def finish_staging_writes(self) -> None:
+        """Wait for staging writers before removing their objects."""
+        self._ploader.finish_staging_writes()
 
     def claim_object(self, remote_path: str, data: bytes) -> None:
         """Conditionally publish an immutable ownership record."""

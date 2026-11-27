@@ -87,6 +87,7 @@ from ch_backup.exceptions import (
     TerminatingSignal,
     is_broken_executor,
 )
+from ch_backup.logic.lock_manager import local_copy_locks
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
@@ -564,9 +565,22 @@ class BackupCopier:
         ]
         return backups
 
-    # pylint: disable=too-many-branches
-    # pylint: disable=too-many-statements
     def _copy_backup(self, backup_name: str, result: BackupCopyResult) -> bool:
+        """Keep the target metadata stable from the first read through publication."""
+        held = {
+            (physical_storage_id(self._target_storage), _key(path).rstrip("/"))
+            for path in (
+                self._target_layout.get_backup_path(backup_name),
+                self._target_layout.get_cloud_storage_path(backup_name),
+            )
+        }
+        with local_copy_locks(held):
+            return self._copy_locked_backup(backup_name, result, held)
+
+    # pylint: disable=too-many-branches,too-many-statements
+    def _copy_locked_backup(
+        self, backup_name: str, result: BackupCopyResult, held: set[tuple]
+    ) -> bool:
         """
         Copy backup. Return False if the backup is already present in the target storage.
 
@@ -596,7 +610,7 @@ class BackupCopier:
         )
         target_meta = self._make_target_metadata(backup)
         target_meta.copy_reencrypted = self._reencrypt
-        published = self._validate_export(backup, target_backup, target_meta)
+        published = self._resume_export_publication(backup, target_backup, target_meta)
         if target_backup:
             if (
                 target_backup.start_time != backup.start_time
@@ -655,11 +669,7 @@ class BackupCopier:
                     f'Encrypting cloud storage data of backup "{backup.name}" created '
                     "with cloud_storage.copy_data is not supported"
                 )
-            if backup.cloud_storage.data_encryption is not None and not (
-                self._reencrypt
-                and CopyScope.FILES not in self._scopes
-                and backup.state == BackupState.CREATED
-            ):
+            if backup.cloud_storage.data_encryption is not None:
                 raise ClickhouseBackupError(
                     f'Cloud storage data of backup "{backup.name}" is already encrypted'
                 )
@@ -709,15 +719,20 @@ class BackupCopier:
                     f"Cannot export incomplete plan for backup {backup.name}"
                 )
             target_meta.mark_export_encrypted()
-        self._claim_export(target_meta, backup, plan)
-        self._transfer_backup(
-            backup,
-            target_meta,
-            target_data_encryption,
-            plan,
-            previous,
-            result,
-        )
+        locations = {
+            (physical_storage_id(storage), _key(prefix).rstrip("/"))
+            for storage, prefix in self._target_prefixes(backup, plan)
+        }
+        with local_copy_locks(locations - held):
+            self._claim_export(target_meta, backup, plan)
+            self._transfer_backup(
+                backup,
+                target_meta,
+                target_data_encryption,
+                plan,
+                previous,
+                result,
+            )
         return True
 
     def _export_claim_path(self, name: str) -> str:
@@ -726,13 +741,13 @@ class BackupCopier:
             os.path.join(self._target_layout.get_backup_path(name), REENCRYPT_CLAIM)
         )
 
-    def _validate_export(
+    def _resume_export_publication(
         self,
         backup: BackupMetadata,
         previous: BackupMetadata | None,
         target: BackupMetadata,
     ) -> bool:
-        """Reject incompatible exports and determine whether the copy is published."""
+        """Check export compatibility and finish publishing a completed copy on retry."""
         if not self._reencrypt:
             if previous and (
                 previous.copy_reencrypted
@@ -831,34 +846,70 @@ class BackupCopier:
         local_claim = json.dumps(identity, sort_keys=True).encode()
         if self._reencrypt:
             self._require_empty_or_claimed(engine, path)
+        if engine.path_exists(path) and engine.download_data(path) != local_claim:
+            raise StorageError(
+                "Conflicting copy parameters: target reserved for export"
+            )
         if cloud:
-            cloud_engine, location, marker = cloud
-            location_bytes = json.dumps(location).encode()
-            if self._reencrypt:
-                self._require_empty_or_claimed(cloud_engine, marker)
-                if (
-                    engine.path_exists(path + ".cloud")
-                    and engine.download_data(path + ".cloud") != location_bytes
-                ):
-                    raise ClickhouseBackupError("Conflicting target cloud destination")
-            cloud_claim = json.dumps(
-                {
-                    **identity,
-                    "target_storage": storage_id(self._target_storage),
-                    "target_path": path,
-                },
-                sort_keys=True,
-            ).encode()
+            storage, prefix = cloud
+            location_bytes = json.dumps((storage_id(storage), prefix)).encode()
             if (
-                cloud_engine.path_exists(marker)
-                and cloud_engine.download_data(marker) != cloud_claim
+                self._reencrypt
+                and engine.path_exists(path + ".cloud")
+                and engine.download_data(path + ".cloud") != location_bytes
             ):
-                raise ClickhouseBackupError("Conflicting target cloud reservation")
-        engine.claim_object(path, local_claim)
-        if cloud:
-            cloud_engine.claim_object(marker, cloud_claim)
-            if self._reencrypt:
+                raise ClickhouseBackupError("Conflicting target cloud destination")
+            self._claim_cold_prefix(storage, prefix, path, identity)
+        if self._reencrypt:
+            engine.claim_object(path, local_claim)
+            if cloud:
                 engine.claim_object(path + ".cloud", location_bytes)
+
+    def _claim_cold_prefix(
+        self, storage: dict, prefix: str, path: str, identity: dict
+    ) -> None:
+        """Bind a cold directory object to the primary backup that may write its children."""
+        engine = self._engine(storage)
+        owner = json.dumps([physical_storage_id(self._target_storage), path]).encode()
+        marker = prefix + "/"
+        if engine.path_exists(marker):
+            engine.claim_object(marker, owner)
+            return
+        with local_copy_locks(
+            {("cold-allocation", physical_storage_id(storage))}, persistent=True
+        ):
+            for ancestor in PurePosixPath(prefix).parents:
+                if str(ancestor) == ".":
+                    break
+                folder = str(ancestor) + "/"
+                if engine.path_exists(folder) and engine.get_object_size(folder):
+                    raise StorageError(
+                        f'Cold prefix "{prefix}" overlaps an occupied directory "{ancestor}"'
+                    )
+            page, continuation = engine.read_listing_page(prefix)
+            if (page or continuation) and not engine.path_exists(marker):
+                legacy_marker = os.path.join(prefix, REENCRYPT_CLAIM)
+                legacy_claim = json.dumps(
+                    {
+                        **identity,
+                        "target_storage": storage_id(self._target_storage),
+                        "target_path": path,
+                    },
+                    sort_keys=True,
+                ).encode()
+                primary = self._engine(self._target_storage)
+                if not (
+                    primary.path_exists(path)
+                    and primary.download_data(path)
+                    == json.dumps(identity, sort_keys=True).encode()
+                    and engine.path_exists(legacy_marker)
+                    and engine.get_object_size(legacy_marker) == len(legacy_claim)
+                    and engine.download_data(legacy_marker) == legacy_claim
+                ):
+                    raise ClickhouseBackupError(
+                        f'Target prefix "{prefix}" already contains data without matching ownership'
+                    )
+            engine.claim_object(marker, owner)
 
     @staticmethod
     def _require_empty_or_claimed(
@@ -874,7 +925,7 @@ class BackupCopier:
 
     def _external_export_destination(
         self, backup: BackupMetadata, plan: _CopyPlan
-    ) -> tuple[PipeLineCompatibleStorageEngine, tuple[tuple, str], str] | None:
+    ) -> tuple[dict, str] | None:
         """Resolve the physical cold-data claim only when planning external writes."""
         if (
             not backup.cloud_storage.requires_source_bucket
@@ -882,12 +933,7 @@ class BackupCopier:
         ):
             return None
         storage, prefix = self._get_target_cloud_storage()
-        path = os.path.join(prefix, backup.name)
-        return (
-            self._engine(storage),
-            (storage_id(storage), path),
-            os.path.join(path, REENCRYPT_CLAIM),
-        )
+        return storage, os.path.join(prefix, backup.name)
 
     def _raw_export(self, backup: BackupMetadata) -> bool:
         """Identify a bytewise copy whose payload has its own key identity."""
@@ -1232,14 +1278,6 @@ class BackupCopier:
                 )
                 for entry in batch:
                     validate(entry.dst_storage, entry.dst_path)
-                    if len(prefixes) == 3 and (
-                        storage_id(entry.dst_storage) == storage_id(prefixes[-1][0])
-                        and _key(entry.dst_path)
-                        == _key(os.path.join(prefixes[-1][1], REENCRYPT_CLAIM))
-                    ):
-                        raise ClickhouseBackupError(
-                            "Cold object conflicts with copy reservation"
-                        )
                     if destinations is not None:
                         self._validate_export_entry(entry, prefixes, destinations)
                 if continuation is None:
@@ -2486,6 +2524,8 @@ class BackupCopier:
                 self._copy_objects(backup, plan, result, failures)
                 copied = True
             except Exception as e:
+                if len(result.errors) == errors:
+                    result.add_error(e, "copy")
                 if not self._keep_going or is_broken_executor(e):
                     raise
             finally:
@@ -2573,8 +2613,10 @@ class BackupCopier:
         try:
             self._target_layout.wait(keep_going=self._keep_going)
             self._record_archives(backup, uploaded_archives)
-        finally:
+        except BaseException:
             context.flush(force=True)
+            raise
+        context.flush(force=True, required=self._reencrypt)
         if len(result.errors) > errors:
             raise ClickhouseBackupError(
                 f"Failed to copy backup {backup.name}: {len(result.errors)} error(s), "

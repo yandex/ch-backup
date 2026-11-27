@@ -37,6 +37,7 @@ from ch_backup.exceptions import (
     BackupNotFound,
     ConfigurationError,
     TerminatingSignal,
+    interrupt,
 )
 
 from . import logging
@@ -82,7 +83,7 @@ def signal_handler(signum, _frame):
     # If a signal handler raises an exception, the exception will be propagated to the main
     # thread and may be raised after any bytecode instruction.
     # https://docs.python.org/3/library/signal.html#note-on-signal-handlers-and-exceptions
-    raise TerminatingSignal(f"Execution was interrupted by the signal {signum}")
+    interrupt(signum)
 
 
 signal.signal(signal.SIGTERM, signal_handler)

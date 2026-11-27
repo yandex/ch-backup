@@ -2,6 +2,7 @@
 New pipelines executor module.
 """
 
+from contextlib import nullcontext
 from functools import partial
 from pathlib import Path
 from typing import (
@@ -12,10 +13,11 @@ from typing import (
     Sequence,
 )
 
-from ch_backup.exceptions import TerminatingSignal
+from ch_backup.exceptions import TerminatingSignal, defer_termination_signals
 from ch_backup.profile import profile
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
     ProcessExecPool,
+    ThreadExecPool,
 )
 from ch_backup.storage.async_pipeline.pipelines import (
     copy_object_pipeline,
@@ -43,13 +45,19 @@ class PipelineExecutor:
     or in-place(synchronously).
     """
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, *, use_threads: bool = False) -> None:
+        """Keep staging writers in the restore process when requested."""
         self._config = config
-        self._exec_pool: ProcessExecPool | None = None
+        self._exec_pool: ProcessExecPool | ThreadExecPool | None = None
 
         worker_count = self._config["multiprocessing"].get("workers")
+        self._inline_staging = use_threads and not worker_count
         if worker_count:
-            self._exec_pool = ProcessExecPool(worker_count)
+            self._exec_pool = (
+                ThreadExecPool(worker_count)
+                if use_threads
+                else ProcessExecPool(worker_count)
+            )
 
     def upload_data(
         self, data: AnyStr, remote_path: str, is_async: bool, encryption: bool
@@ -313,8 +321,17 @@ class PipelineExecutor:
             try:
                 self._exec_pool.wait_all(keep_going)
             except:
-                self._exec_pool.shutdown(graceful=False)
+                if isinstance(self._exec_pool, ThreadExecPool):
+                    self.finish_staging_writes()
+                else:
+                    self._exec_pool.shutdown(graceful=False)
                 raise
+
+    def finish_staging_writes(self) -> None:
+        """Join every staging thread, including jobs interrupted during submission."""
+        if isinstance(self._exec_pool, ThreadExecPool):
+            with defer_termination_signals():
+                self._exec_pool.shutdown()
 
     def _exec_pipeline(
         self,
@@ -329,13 +346,19 @@ class PipelineExecutor:
         """
         try:
             if is_async and self._exec_pool:
-                return self._exec_pool.submit(
-                    job_id,
-                    profile(10, 60)(pipeline),
-                    callback=callback,
-                    on_error=on_error,
-                )
-            result = pipeline()
+                with (
+                    defer_termination_signals()
+                    if isinstance(self._exec_pool, ThreadExecPool)
+                    else nullcontext()
+                ):
+                    return self._exec_pool.submit(
+                        job_id,
+                        profile(10, 60)(pipeline),
+                        callback=callback,
+                        on_error=on_error,
+                    )
+            with defer_termination_signals() if self._inline_staging else nullcontext():
+                result = pipeline()
         except (Exception, TerminatingSignal) as e:
             if on_error:
                 on_error(e)

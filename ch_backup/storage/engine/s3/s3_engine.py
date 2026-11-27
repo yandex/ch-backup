@@ -90,6 +90,36 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         )
         return remote_path
 
+    def require_unversioned_staging(self) -> None:
+        """Refuse staging in buckets that can retain deleted plaintext versions."""
+        status = self._s3_client.get_bucket_versioning(Bucket=self._s3_bucket_name)
+        if "Status" in status:
+            raise StorageError(
+                "Decryption staging requires a bucket without versioning"
+            )
+
+    def abort_multipart_uploads(self, prefix: str) -> None:
+        """Abort incomplete parts of plaintext objects under a drained staging root."""
+        prefix = prefix.strip("/")
+        if not prefix:
+            raise StorageError("Cannot clean multipart uploads at the bucket root")
+        client = self._s3_client
+        pages = client.get_paginator("list_multipart_uploads").paginate(
+            Bucket=self._s3_bucket_name, Prefix=prefix + "/"
+        )
+        for page in pages:
+            for upload in page.get("Uploads", []):
+                if not upload["Key"].startswith(prefix + "/"):
+                    raise StorageError("Multipart upload is outside the staging prefix")
+                try:
+                    client.abort_multipart_upload(
+                        Bucket=self._s3_bucket_name,
+                        Key=upload["Key"],
+                        UploadId=upload["UploadId"],
+                    )
+                except client.exceptions.NoSuchUpload:
+                    continue
+
     def claim_object(self, remote_path: str, data: bytes) -> None:
         """Create an immutable claim or verify that an earlier claim matches."""
         key = remote_path.lstrip("/")
@@ -100,7 +130,10 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         except ClientError as error:
             if error.response["ResponseMetadata"].get("HTTPStatusCode") != 412:
                 raise
-            if self.download_data(key) != data:
+            if (
+                self.get_object_size(key) != len(data)
+                or self.download_data(key) != data
+            ):
                 raise StorageError(f'Conflicting copy parameters for "{key}"') from None
 
     def download_file(self, remote_path: str, local_path: str) -> None:

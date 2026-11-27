@@ -92,6 +92,10 @@ class FakeEngine:
         """Look up a stored key."""
         return path in self._objects
 
+    def get_object_size(self, path: str) -> int:
+        """Return the stored size used when checking ownership records."""
+        return self._objects[path]
+
     def claim_object(self, path: str, data: bytes) -> None:
         """Match the conditional create semantics of S3."""
         if self.path_exists(path):
@@ -1455,9 +1459,16 @@ def test_cloud_storage_of_copied_backup(endpoint_override: str | None) -> None:
 
 
 def test_cloud_storage_recopies_existing_objects() -> None:
+    """Retry unconfirmed objects in the prefix already claimed by this copy."""
     ctx = _cloud_storage_context()
-    ctx.store.bucket("disk-copy")["copies/b1/xyz/aaa"] = 1000
-
+    ctx.target_layout.store = ctx.store
+    ctx.target_layout.object_errors["data/xyz/bbb"] = StorageError("transfer failed")
+    with pytest.raises(StorageError, match="transfer failed"):
+        ctx.copy(["b1"])
+    assert ctx.store.bucket("disk-copy")["copies/b1/xyz/aaa"] == 1000
+    ctx.target_layout.object_errors.clear()
+    ctx.target_layout.copied.clear()
+    ctx.target_config["copy"]["resume"] = False
     ctx.copy(["b1"])
 
     assert "copies/b1/xyz/aaa" in {e.dst_path for e in ctx.target_layout.copied}

@@ -1,8 +1,13 @@
 """Restore staging for encrypted object storage data."""
 
+import json
 import os
+from contextlib import ExitStack
+from fcntl import LOCK_EX, LOCK_NB, flock
+from hashlib import sha256
 from pathlib import Path
 from typing import Literal, Sequence
+from uuid import UUID, uuid4
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
@@ -19,6 +24,7 @@ from ch_backup.exceptions import (
     ClickhouseBackupError,
     ConfigurationError,
     TerminatingSignal,
+    defer_termination_signals,
     is_broken_executor,
 )
 from ch_backup.storage import StorageLoader
@@ -39,9 +45,46 @@ class CloudStorageDecryption:
     """Decrypt copied object storage data into restore staging."""
 
     def __init__(self, config: Config | dict, backup_layout: BackupLayout) -> None:
+        self._lock_dir = Path(config["clickhouse"]["tmp_path"]) / "decryption-staging"
+        self._locks = ExitStack()
+        self._checked_buckets: set[tuple] = set()
+        self._owned_roots: dict[tuple, str] = {}
         self._layout = backup_layout
-        self._storage_loader = StorageLoader(config)
+        self._storage_loader = StorageLoader(config, use_threads=True)
         self._staging_prefixes: dict[tuple, tuple[dict, set[str]]] = {}
+
+    def _check_staging_bucket(self, storage: dict) -> None:
+        """Require permanent deletion before touching plaintext in this bucket."""
+        identity = physical_storage_id(storage)
+        if identity not in self._checked_buckets:
+            get_storage_engine(storage).require_unversioned_staging()
+            self._checked_buckets.add(identity)
+
+    def allocate_staging(self, storage: dict, prefix: str) -> str:
+        """Reclaim this worker's abandoned staging while excluding active restores."""
+        key = (physical_storage_id(storage), _normalize_prefix(prefix))
+        self._check_staging_bucket(storage)
+        if key not in self._owned_roots:
+            self._lock_dir.mkdir(parents=True, exist_ok=True)
+            lock_path = self._lock_dir / sha256(json.dumps(key).encode()).hexdigest()
+            lock = self._locks.enter_context(lock_path.open("a+", encoding="ascii"))
+            try:
+                flock(lock, LOCK_EX | LOCK_NB)
+            except BlockingIOError as error:
+                raise ConfigurationError(
+                    "Decryption staging is already in use"
+                ) from error
+            lock.seek(0)
+            token = lock.read()
+            if not token:
+                token = uuid4().hex
+                lock.write(token)
+                lock.flush()
+                os.fsync(lock.fileno())
+            root = os.path.join(prefix, UUID(token).hex)
+            self._cleanup_prefix(storage, root)
+            self._owned_roots[key] = root
+        return os.path.join(self._owned_roots[key], uuid4().hex)
 
     # pylint: disable=too-many-positional-arguments,too-many-locals
     def decrypt(
@@ -61,6 +104,7 @@ class CloudStorageDecryption:
         validate_staging_sources(
             staging_storage, staging_path, [(source_storage, source_path)]
         )
+        self._check_staging_bucket(staging_storage)
         staging = self._staging_prefixes.setdefault(
             storage_id(staging_storage), (staging_storage, set())
         )
@@ -134,23 +178,36 @@ class CloudStorageDecryption:
 
     def cleanup(self) -> None:
         """Remove all plaintext objects under the registered staging prefixes."""
-        for storage, prefixes in self._staging_prefixes.values():
-            for prefix in sorted(prefixes):
-                self._cleanup_prefix(storage, prefix)
-        self._staging_prefixes.clear()
+        with defer_termination_signals():
+            self._storage_loader.finish_staging_writes()
+            with self._locks, ExitStack() as cleanup:
+                for storage, prefixes in self._staging_prefixes.values():
+                    for prefix in prefixes:
+                        cleanup.callback(self._cleanup_prefix, storage, prefix)
+            self._staging_prefixes.clear()
+            self._owned_roots.clear()
 
     @staticmethod
     def _cleanup_prefix(storage: dict, prefix: str) -> None:
         """Remove all objects under one exclusive staging prefix."""
         engine = get_storage_engine(storage)
-        paths = engine.list_dir(prefix, recursive=True, absolute=True)
-        logging.info(
-            "Removing {} decrypted cloud storage staging objects from {}",
-            len(paths),
-            prefix,
-        )
-        for batch in chunked(paths, storage["bulk_delete_chunk_size"]):
-            engine.delete_files(batch)
+        try:
+            engine.abort_multipart_uploads(prefix)
+        finally:
+            paths = engine.list_dir(prefix, recursive=True, absolute=True)
+            logging.info(
+                "Removing {} decrypted cloud storage staging objects from {}",
+                len(paths),
+                prefix,
+            )
+            error = None
+            for batch in chunked(paths, storage["bulk_delete_chunk_size"]):
+                try:
+                    engine.delete_files(batch)
+                except Exception as exc:
+                    error = error or exc
+            if error is not None:
+                raise error
 
     def _decrypt_entries(
         self, entries: dict[str, CopyEntry], disk_name: str, keep_going: bool
