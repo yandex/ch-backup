@@ -233,18 +233,15 @@ def _populate_dedup_info(
                     ):
                         continue
 
-                    if part.link:
-                        backup_name = part.link
-                        if backup_name not in dedup_backup_names:
-                            continue
-                    else:
-                        backup_name = backup.name
+                    owner_backup_name = part.resolve_stored_reference(backup.name).owner
+                    if part.link and owner_backup_name not in dedup_backup_names:
+                        continue
 
                     part_dedup = PartDedupInfo(
                         database=db.name,
                         table=table.name,
                         name=part.name,
-                        backup_name=backup_name,
+                        backup_name=owner_backup_name,
                         checksum=part.checksum,
                         size=part.size,
                         files=part.files,
@@ -445,18 +442,33 @@ def collect_dedup_references_for_batch_backup_deletion(
         _create_empty_dedup_references
     )
 
-    for backup in retained_backups_light_meta:
+    for light_metadata in retained_backups_light_meta:
+        backup = layout.reload_backup(light_metadata, use_light_meta=False)
         if backup.name in deleting_backup_names:
             raise StorageError("Deleting backup cannot be retained")
-        backup = layout.reload_backup(backup, use_light_meta=False)
+        referenced_parts: dict[str, int] = defaultdict(int)
         for table in backup.get_tables():
             for part in table.get_parts():
-                if not part.link or part.link not in deleting_backup_names:
+                if not part.link:
                     continue
 
-                _add_part_to_dedup_references(dedup_references[part.link], part)
+                owner_backup_name = part.resolve_stored_reference(backup.name).owner
+                if owner_backup_name not in deleting_backup_names:
+                    continue
+
+                _add_part_to_dedup_references(dedup_references[owner_backup_name], part)
+                referenced_parts[owner_backup_name] += 1
                 if referenced_by is not None:
-                    referenced_by.setdefault(part.link, set()).add(backup.name)
+                    referenced_by.setdefault(owner_backup_name, set()).add(backup.name)
+        for owner_name, part_count in sorted(referenced_parts.items()):
+            logging.info(
+                "Retaining referenced parts: owner={}, dependent={}, parts={}",
+                owner_name,
+                backup.name,
+                part_count,
+            )
+
+        del backup
 
     return dedup_references
 
@@ -464,4 +476,5 @@ def collect_dedup_references_for_batch_backup_deletion(
 def _add_part_to_dedup_references(
     dedup_references: DedupReferences, part: PartMetadata
 ) -> None:
-    dedup_references[part.database][part.table].add(part.deduplicated_part_name)
+    database_name, table_name, stored_part_name = part.stored_identity
+    dedup_references[database_name][table_name].add(stored_part_name)

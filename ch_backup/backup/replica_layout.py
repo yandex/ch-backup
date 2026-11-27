@@ -84,6 +84,8 @@ class ReplicaLayout(BackupLayout):
     ) -> BackupMetadata:
         """
         Read the requested objects of the replica as a backup without data.
+
+        A live replica supplies schema directly and has no stored metadata files.
         """
         self._host = backup_name
         self._check_source()

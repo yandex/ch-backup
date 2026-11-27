@@ -368,7 +368,6 @@ class BackupMetadata:
         # pylint: disable=protected-access
         try:
             meta = data["meta"]
-
             backup = cls.__new__(cls)
             backup.name = meta["name"]
             # DEPRECATED: kept for backward compatibility — fall back to the
@@ -622,6 +621,34 @@ class BackupMetadata:
         self.size += part.size
         if not part.link:
             self.real_size += part.size
+
+    def set_cloud_storage_fingerprint(
+        self, part: PartMetadata, fingerprint: str
+    ) -> None:
+        """Store the fingerprint in this backup's part record.
+
+        Decoded part objects are snapshots. Updating one alone would lose the
+        fingerprint on the next metadata read. The supplied part stays unchanged.
+        """
+        self._databases[part.database]["tables"][part.table]["parts"][part.name][
+            "cloud_storage_fingerprint"
+        ] = fingerprint
+
+    def select_disks_with_stored_cloud_parts(self) -> list[str]:
+        """Select disks that may contain cloud parts stored by this backup.
+
+        A disk containing only links has no parts to delete here. Include disks
+        absent from part metadata because their ownership cannot be determined.
+        """
+        parts = self.get_parts()
+        disks_with_stored_parts = {part.disk_name for part in parts if not part.link}
+        disks_with_linked_parts = {part.disk_name for part in parts if part.link}
+        return [
+            disk_name
+            for disk_name in self.cloud_storage.disks
+            if disk_name in disks_with_stored_parts
+            or disk_name not in disks_with_linked_parts
+        ]
 
     def unlink_part(self, part: PartMetadata) -> None:
         """

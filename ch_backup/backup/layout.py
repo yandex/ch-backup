@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from functools import partial
 from io import IOBase
 from itertools import islice
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from tarfile import BLOCKSIZE
 from tempfile import NamedTemporaryFile
 from typing import (
@@ -28,12 +28,17 @@ from urllib.parse import quote
 from nacl.exceptions import CryptoError
 
 from ch_backup import logging
+from ch_backup.backup.cloud_cleanup import (
+    CloudCleanupManifests,
+    CloudObjectDeletionIndex,
+)
 from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
     DetachedPartMetadata,
     PartMetadata,
     sanitize_backup_name,
+    split_part_name,
 )
 from ch_backup.backup.metadata.cloud_storage_metadata import (
     CloudStorageBackup,
@@ -50,6 +55,7 @@ from ch_backup.config import Config
 from ch_backup.encryption import get_encryption_class
 from ch_backup.exceptions import (
     ConfigurationError,
+    InvalidBackupStruct,
     StorageError,
     TerminatingSignal,
     is_broken_executor,
@@ -437,7 +443,7 @@ class BackupLayout:
 
         backup_name = backup_meta.get_sanitized_name()
         compression = backup_meta.cloud_storage.compressed
-        remote_path = _disk_metadata_path(
+        remote_path = cloud_storage_metadata_archive_path(
             self.get_backup_path(backup_name),
             table.database,
             table.name,
@@ -720,7 +726,7 @@ class BackupLayout:
                     raise StorageError(f"Cloud prefix conflicts with backup {name}")
         if self.cloud_storage_owned(backup_name):
             return
-        if not adopt and self._list_cloud_storage_files(backup_name):
+        if not adopt and self._list_backup_cloud_files(backup_name):
             raise StorageError(
                 f"Cloud prefix of {backup_name} is not owned; use adopt-cloud-storage after verifying its owner"
             )
@@ -867,6 +873,7 @@ class BackupLayout:
                 f"Failed to derive light metadata for backup {backup_name}"
             ) from error
 
+    # pylint: disable=too-many-locals,too-many-branches
     def get_backups(
         self,
         use_light_meta: bool = False,
@@ -874,10 +881,13 @@ class BackupLayout:
         unreadable: dict[str, str] | None = None,
         strict_inventory: bool = False,
         pending: dict[str, dict] | None = None,
+        excluded_backup_names: frozenset[str] = frozenset(),
     ) -> list[BackupMetadata]:
         """
-        Return list of existing backups sorted by start_time in descent order.
+        Return existing backups, newest first.
+
         If unreadable is provided, collect per-backup read errors there.
+        Skip names in excluded_backup_names without reading their metadata.
         """
         logging.debug(
             "Collecting {} of existing backups",
@@ -891,11 +901,12 @@ class BackupLayout:
             for name in names
             if sanitize_backup_name(name) != name
         }
+        names = [name for name in names if name not in excluded_backup_names]
         for name in names:
             try:
                 marker = self.get_delete_pending(name)
             except StorageError as marker_error:
-                if strict_inventory or unreadable is None:
+                if (strict_inventory and pending is None) or unreadable is None:
                     raise
                 unreadable[name] = str(marker_error)
                 logging.warning("{}", marker_error)
@@ -1172,7 +1183,7 @@ class BackupLayout:
         """
         Download a whole part, reporting success only after every file is written.
         """
-        source_part_name = part.deduplicated_part_name
+        stored_part = part.resolve_stored_reference(backup_meta.name)
         pending = 1 if part.tarball else len(part.files)
         failed = False
 
@@ -1192,7 +1203,7 @@ class BackupLayout:
         logging.debug(
             'Downloading data part {} (stored as {}) of "{}"."{}"',
             part.name,
-            source_part_name,
+            stored_part.name,
             part.database,
             part.table,
         )
@@ -1202,19 +1213,17 @@ class BackupLayout:
                 _validate_part_file_paths(fs_part_path, part.files)
             os.makedirs(fs_part_path, exist_ok=True)
 
-            # part.link is the source backup name for deduplicated parts (or None).
-            source_backup_name = part.link or backup_meta.name
-            backup_path = self.get_backup_path(source_backup_name)
+            backup_path = self.get_backup_path(stored_part.owner)
             remote_dir_path = self._get_escaped_if_exists(
                 _part_path,
                 backup_path,
-                part.database,
-                part.table,
-                source_part_name,
+                stored_part.database,
+                stored_part.table,
+                stored_part.name,
             )
 
             if part.tarball:
-                remote_path = os.path.join(remote_dir_path, f"{source_part_name}.tar")
+                remote_path = os.path.join(remote_dir_path, f"{stored_part.name}.tar")
                 logging.debug("Downloading part tarball file: {}", remote_path)
                 self._storage_loader.download_files(
                     remote_path=remote_path,
@@ -1290,22 +1299,20 @@ class BackupLayout:
         """
         Check availability of part data in storage.
         """
-        source_part_name = part.deduplicated_part_name
+        stored_part = part.resolve_stored_reference(backup_name)
 
         try:
-            # part.link is the source backup name for deduplicated parts (or None).
-            source_backup_name = part.link or backup_name
-            resolved_backup_path = self.get_backup_path(source_backup_name)
+            resolved_backup_path = self.get_backup_path(stored_part.owner)
             remote_dir_path = self._get_escaped_if_exists(
                 _part_path,
                 resolved_backup_path,
-                part.database,
-                part.table,
-                source_part_name,
+                stored_part.database,
+                stored_part.table,
+                stored_part.name,
             )
             remote_files = self._storage_loader.list_dir(remote_dir_path)
             files = dict.fromkeys(remote_files, 0)
-            tar_name = f"{source_part_name}.tar"
+            tar_name = f"{stored_part.name}.tar"
             if part.tarball and tar_name in files:
                 files[tar_name] = self._storage_loader.get_file_size(
                     os.path.join(remote_dir_path, tar_name)
@@ -1433,55 +1440,110 @@ class BackupLayout:
             )
             return False
 
-    def get_cloud_storage_metadata_remote_paths(
+    def list_cloud_storage_metadata_archives(
         self,
         backup_name: str,
-        source_disk_name: str,
+        disk_name: str,
         compression: bool,
         desired_tables: Sequence[TableMetadata] | Literal["all"],
+        *,
+        mixed_format: Literal["prefer_disk", "reject", "include"] = "prefer_disk",
     ) -> Sequence[str]:
         """
         Return remote paths of tarballs with cloud storage metadata of the specified disk.
         """
+        if not disk_name or disk_name in (".", "..") or "/" in disk_name:
+            raise ConfigurationError(
+                "Cloud storage disk name must be one path component"
+            )
         backup_path = self.get_backup_path(backup_name)
         # Check if metadata is stored as 'disks/s3.tar.gz' for backwards compatibility
-        old_style_remote_path = self.get_legacy_disk_metadata_path(
-            backup_name, source_disk_name, compression
+        legacy_archive_path = self.get_legacy_disk_metadata_path(
+            backup_name, disk_name, compression
         )
-        if self._storage_loader.path_exists(old_style_remote_path):
-            return [old_style_remote_path]
+        disk_wide = self._storage_loader.path_exists(legacy_archive_path)
+        if disk_wide and mixed_format == "prefer_disk":
+            return [legacy_archive_path]
 
-        disk_path = os.path.join(
-            backup_path, CLOUD_STORAGE_METADATA_DIR, source_disk_name
+        metadata_directory = os.path.join(
+            backup_path, CLOUD_STORAGE_METADATA_DIR, disk_name
         )
-        existing_paths = self._storage_loader.list_dir(
-            disk_path, recursive=True, absolute=True
+        existing_archive_paths = self._storage_loader.list_dir(
+            metadata_directory, recursive=True, absolute=True
         )
-        if desired_tables == "all":
-            return existing_paths
-
-        remote_paths = {
-            _disk_metadata_path(
-                backup_path,
-                table.database,
-                table.name,
-                source_disk_name,
-                compression,
+        # Cleanup reads the keys in these archives. Reject listings outside
+        # the requested disk before they can authorize payload deletion.
+        for archive_path in existing_archive_paths:
+            try:
+                relative_path = PurePosixPath(archive_path).relative_to(
+                    metadata_directory
+                )
+            except ValueError as error:
+                raise ConfigurationError(
+                    "Cloud metadata archive is outside its disk directory"
+                ) from error
+            if not relative_path.parts or ".." in relative_path.parts:
+                raise ConfigurationError(
+                    "Cloud metadata archive is outside its disk directory"
+                )
+        if desired_tables != "all":
+            requested_archive_paths = {
+                cloud_storage_metadata_archive_path(
+                    backup_path, table.database, table.name, disk_name, compression
+                )
+                for table in desired_tables
+            }
+            if not disk_wide:
+                for archive_path in requested_archive_paths.difference(
+                    existing_archive_paths
+                ):
+                    logging.warning(f"Missing path {archive_path} on remote")
+            existing_archive_paths = list(
+                requested_archive_paths.intersection(existing_archive_paths)
             )
-            for table in desired_tables
-        }
-        needed_paths = remote_paths.intersection(existing_paths)
-        missing_paths = remote_paths.difference(existing_paths)
-        for path in missing_paths:
-            logging.warning(f"Missing path {path} on remote")
 
-        return list(needed_paths)
+        if disk_wide:
+            if mixed_format == "include":
+                return [legacy_archive_path, *existing_archive_paths]
+            # A copied disk can contain both disk-wide and per-table archives.
+            # Selecting the disk-wide archive alone would silently omit those parts.
+            if any(
+                path.endswith((".tar", ".tar.gz")) for path in existing_archive_paths
+            ):
+                raise StorageError(
+                    f'Cloud metadata for "{backup_name}" on disk "{disk_name}" contains '
+                    "both disk-wide and per-table archives. Restore cannot select all parts safely."
+                )
+            return [legacy_archive_path]
+        return existing_archive_paths
+
+    def list_restore_metadata_archives(
+        self,
+        backup: BackupMetadata | CloudStorageBackup,
+        disk_name: str,
+        desired_tables: Sequence[TableMetadata] | Literal["all"],
+    ) -> Sequence[str]:
+        """Select archives for restore, including owners with only a restore descriptor."""
+        return self.list_cloud_storage_metadata_archives(
+            backup.get_sanitized_name(),
+            disk_name,
+            backup.cloud_storage.compressed,
+            desired_tables,
+            mixed_format=(
+                "reject"
+                if (
+                    backup.cloud_storage.source
+                    or (isinstance(backup, BackupMetadata) and backup.copied_from)
+                )
+                else "prefer_disk"
+            ),
+        )
 
     def get_legacy_disk_metadata_path(
         self, backup_name: str, disk_name: str, compressed: bool
     ) -> str:
         """Return the key of the shared metadata archive in older backups."""
-        return _disk_metadata_path(
+        return cloud_storage_metadata_archive_path(
             self.get_backup_path(backup_name), None, None, disk_name, compressed
         )
 
@@ -1514,15 +1576,17 @@ class BackupLayout:
         backup_path = self.get_cloud_storage_path(backup_name)
         return any(
             self._storage_loader.path_exists(
-                _disk_metadata_path(backup_path, database, table, disk_name, compressed)
+                cloud_storage_metadata_archive_path(
+                    backup_path, database, table, disk_name, compressed
+                )
             )
             for compressed in (True, False)
         )
 
-    def get_cloud_storage_metadata_files(
+    def read_cloud_storage_metadata_archive(
         self, backup_meta: BackupMetadata | CloudStorageBackup, remote_path: str
     ) -> list[tuple[str, bytes]]:
-        """Return metadata as a mutable list; copy uses the disk-backed archive API."""
+        """Return a mutable list for callers that need the complete archive in memory."""
         archive = self.download_cloud_storage_metadata_archive(backup_meta, remote_path)
         files = []
         continuation = None
@@ -1553,6 +1617,62 @@ class BackupLayout:
         except Exception as e:
             msg = f'Failed to download tarball file "{remote_path}"'
             raise StorageError(msg) from e
+
+    def read_cloud_copy_manifest(
+        self, backup_name: str
+    ) -> list[tuple[dict, CloudObjectDeletionIndex]]:
+        """Read planned external keys grouped by the destination of each attempt."""
+        return CloudCleanupManifests(
+            self._storage_loader, self.get_backup_path(backup_name)
+        ).keys()
+
+    def collect_cloud_object_keys_for_deletion(
+        self, backup_meta: BackupMetadata, object_prefix: str
+    ) -> CloudObjectDeletionIndex:
+        """Read archived disk metadata to select copied payload objects for deletion.
+
+        Reject keys outside the copy's prefix. Archive deletion is a separate
+        step, so the returned index identifies payload objects only. Archive
+        reads and key storage use the same disk-backed primitives as copy.
+        """
+        object_keys_to_delete = CloudObjectDeletionIndex()
+        # A partial delete can remove an owned part from logical metadata while
+        # its archive and objects remain. Read each existing archive, even when
+        # the remaining parts on that disk are all links.
+        required_disks = set(backup_meta.select_disks_with_stored_cloud_parts())
+        for disk_name in backup_meta.cloud_storage.disks:
+            archive_paths = self.list_cloud_storage_metadata_archives(
+                backup_meta.get_sanitized_name(),
+                disk_name,
+                backup_meta.cloud_storage.compressed,
+                "all",
+                mixed_format="include",
+            )
+            if not archive_paths and disk_name in required_disks:
+                raise InvalidBackupStruct(
+                    f'Cannot identify copied cloud objects: disk metadata for "{disk_name}" is missing'
+                )
+            for archive_path in archive_paths:
+                archive = self.download_cloud_storage_metadata_archive(
+                    backup_meta, archive_path
+                )
+                continuation = None
+                while True:
+                    batch, continuation = archive.read_batch(continuation)
+                    for entry_path, metadata_contents in batch:
+                        if (
+                            os.path.basename(entry_path)
+                            in CLOUD_STORAGE_EXCLUDE_FILE_NAMES
+                        ):
+                            continue
+                        object_keys_to_delete.update(
+                            _resolve_cloud_object_keys_within_prefix(
+                                metadata_contents, object_prefix
+                            )
+                        )
+                    if continuation is None:
+                        break
+        return object_keys_to_delete
 
     def upload_cloud_storage_metadata_files(
         self,
@@ -1669,14 +1789,10 @@ class BackupLayout:
         Download files packed in tarball and unpacks them into specified directory.
         It is also possible to download all files to a single tar.
         """
-        backup_name = backup_meta.get_sanitized_name()
         compression = backup_meta.cloud_storage.compressed
         encryption = backup_meta.cloud_storage.encrypted
-        metadata_remote_paths = self.get_cloud_storage_metadata_remote_paths(
-            backup_name,
-            source_disk_name,
-            compression,
-            desired_tables,
+        metadata_remote_paths = self.list_restore_metadata_archives(
+            backup_meta, source_disk_name, desired_tables
         )
 
         with self._get_cloud_storage_metadata_dst(backup_meta, disk, file_path) as dst:
@@ -1707,7 +1823,7 @@ class BackupLayout:
         Delete backup data and metadata from storage.
         """
         owns_cloud = self.cloud_storage_owned(backup_name)
-        cloud_files = self._list_cloud_storage_files(backup_name)
+        cloud_files = self._list_backup_cloud_files(backup_name)
         if cloud_files and not owns_cloud:
             raise StorageError(
                 f"Cloud prefix of {backup_name} is not owned; adopt it before deletion"
@@ -1776,7 +1892,7 @@ class BackupLayout:
             for part in parts
             for escape_names in (True, False)
         }
-        cloud_files = self._list_cloud_storage_files(backup_name)
+        cloud_files = self._list_backup_cloud_files(backup_name)
         if (
             not referenced_by
             and cloud_files
@@ -1810,25 +1926,25 @@ class BackupLayout:
         self.wait()
         return False
 
-    def delete_cloud_storage_data(self, backup_name: str) -> None:
-        """
-        Delete cloud storage metadata and copied data of a backup.
+    def delete_backup_cloud_files(self, backup_name: str) -> None:
+        """Remove disk-metadata archives and payload held in backup storage.
 
-        Data of a whole backup is deleted at once, so the caller must be sure
-        that no other backup reuses parts of it.
+        The caller must preserve these files while cloud parts remain referenced
+        or external payload still needs its archives for cleanup. External payload
+        uses a separately prepared deletion operation.
         """
-        logging.debug("Deleting cloud storage data of backup {}", backup_name)
+        logging.debug("Deleting cloud files in backup storage for {}", backup_name)
 
-        files = self._list_cloud_storage_files(backup_name)
+        files = self._list_backup_cloud_files(backup_name)
         if files and not self.cloud_storage_owned(backup_name):
             raise StorageError(
                 f"Cloud prefix of {backup_name} is not owned; adopt it before deletion"
             )
         self._delete_files(files)
 
-    def _list_cloud_storage_files(self, backup_name: str) -> list[str]:
+    def _list_backup_cloud_files(self, backup_name: str) -> list[str]:
         """
-        List cloud storage metadata and copied data of a backup.
+        List disk-metadata archives and cloud payload held in backup storage.
 
         Only the two directories are listed, never the whole path: it is formed
         from the sanitized backup name and may belong to another backup whose
@@ -1870,14 +1986,13 @@ class BackupLayout:
         """
         Return remote paths of data part files.
         """
-        # part.link is the source backup name for deduplicated parts (or None).
-        source_backup_name = part.link or backup_name
+        stored_part = part.resolve_stored_reference(backup_name)
         part_path = self._get_escaped_if_exists(
             _part_path,
-            self.get_backup_path(source_backup_name),
-            part.database,
-            part.table,
-            part.deduplicated_part_name,
+            self.get_backup_path(stored_part.owner),
+            stored_part.database,
+            stored_part.table,
+            stored_part.name,
         )
         return [os.path.join(part_path, f) for f in get_data_part_file_names(part)]
 
@@ -2078,9 +2193,7 @@ def get_data_part_relative_dirs(part: PartMetadata) -> list[str]:
     return [
         _part_path(
             "",
-            part.database,
-            part.table,
-            part.deduplicated_part_name,
+            *part.stored_identity,
             escape_names=escape_names,
         )
         for escape_names in (True, False)
@@ -2202,7 +2315,7 @@ def _detached_part_path(
     )
 
 
-def _disk_metadata_path(
+def cloud_storage_metadata_archive_path(
     backup_path: str,
     db_name: str | None,
     table_name: str | None,
@@ -2254,3 +2367,62 @@ def _quote(value: str) -> str:
             ord("-"): "%2D",
         }
     )
+
+
+def _resolve_cloud_object_keys_within_prefix(
+    metadata_contents: bytes, object_prefix: str
+) -> set[str]:
+    """Resolve relative keys and reject objects outside this backup's payload prefix."""
+    metadata = parse_object_storage_metadata(metadata_contents)
+    object_keys = {
+        obj.key if metadata.full_object_keys else os.path.join(object_prefix, obj.key)
+        for obj in metadata.objects
+    }
+    if any(
+        not object_key.startswith(object_prefix + "/")
+        or any(component in (".", "..") for component in object_key.split("/"))
+        for object_key in object_keys
+    ):
+        raise ConfigurationError(
+            "Cloud object in disk metadata is outside the copied backup prefix"
+        )
+    return object_keys
+
+
+def identify_cloud_part_from_archive_entry(
+    backup: BackupMetadata, disk_name: str, archive_path: str, entry_path: str
+) -> tuple[str, str, str] | None:
+    """Identify the part described by an archive entry, or return None if uncertain.
+
+    Match the table through its archive path, UUID, or database/table path.
+    A previous partial deletion may have removed the part from backup metadata
+    while leaving its archived files, so the part need not still be listed.
+    """
+    entry_directories = entry_path.split("/")[:-1]
+    part_name = None
+    for directory_name in reversed(entry_directories):
+        try:
+            split_part_name(directory_name)
+        except ValueError:
+            continue
+        part_name = directory_name
+        break
+    if part_name is None:
+        return None
+    matching_part_identities: list[tuple[str, str, str]] = []
+    for table in backup.get_tables():
+        table_archive_suffix = f"/{_quote(table.database)}/{_quote(table.name)}.tar"
+        if not (
+            archive_path.endswith(table_archive_suffix)
+            or archive_path.endswith(table_archive_suffix + ".gz")
+        ):
+            table_directory = f"/{escape_metadata_file_name(table.database)}/{escape_metadata_file_name(table.name)}/"
+            if (
+                not (table.uuid and table.uuid in entry_directories)
+                and table_directory not in "/" + entry_path
+            ):
+                continue
+        part = backup.find_part(table.database, table.name, part_name)
+        if part is None or part.disk_name == disk_name:
+            matching_part_identities.append((table.database, table.name, part_name))
+    return matching_part_identities[0] if len(matching_part_identities) == 1 else None

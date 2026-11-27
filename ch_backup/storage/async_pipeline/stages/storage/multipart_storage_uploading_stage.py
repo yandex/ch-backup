@@ -87,9 +87,9 @@ class StorageUploadingStage(Handler):
         return part
 
 
-class CompleteMultipartUploadStage(Handler):
+class CompleteStorageUploadStage(Handler):
     """
-    Complete multipart uploading if needed.
+    Complete a multipart upload or persist a successfully completed empty stream.
 
     This stage must be started in a single worker.
     """
@@ -103,8 +103,10 @@ class CompleteMultipartUploadStage(Handler):
         self._loader = loader
         self._remote_path = remote_path
         self._upload_id: str | None = None
+        self._received_parts = False
 
     def __call__(self, part: UploadingPart, index: int) -> None:
+        self._received_parts = True
         if self._upload_id is None and part.upload_id:
             self._upload_id = part.upload_id
 
@@ -113,3 +115,8 @@ class CompleteMultipartUploadStage(Handler):
             self._loader.complete_multipart_upload(
                 remote_path=self._remote_path, upload_id=self._upload_id
             )
+        elif not self._received_parts:
+            # Empty streams produce no parts. Persist the empty object here so
+            # replacement uploads cannot leave old contents behind. The pipeline
+            # calls on_done only after successful upstream completion.
+            self._loader.upload_data(b"", self._remote_path)

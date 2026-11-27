@@ -20,7 +20,7 @@ from .filesystem.write_files_stage import UnpackTarballStage, WriteFilesStage
 from .storage.delete_multiple_storage_stage import DeleteMultipleStorageStage
 from .storage.download_storage_stage import DownloadStorageStage
 from .storage.multipart_storage_uploading_stage import (
-    CompleteMultipartUploadStage,
+    CompleteStorageUploadStage,
     StartMultipartUploadStage,
     StorageUploadingStage,
 )

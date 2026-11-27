@@ -614,7 +614,20 @@ def test_cloud_deletion_requires_ownership_before_touching_payload(
         if whole:
             layout.delete_backup(name, unfreeze)
         else:
-            layout.delete_cloud_storage_data(name)
+            layout.delete_backup_cloud_files(name)
     assert objects == before
     storage.delete_files.assert_not_called()
     unfreeze.assert_not_called()
+
+
+def test_named_owner_preserves_published_restore_descriptor(pending_context):
+    _, layout, _, objects = pending_context
+    metadata = layout.get_backup("old")
+    metadata.cloud_storage = CloudStorageMetadata(data_copied=True, disks=["s3"])
+    layout.upload_backup_metadata(metadata)
+    descriptor_path = "ch_backup/old/cloud_storage_info.json"
+    original = objects[descriptor_path]
+    metadata.cloud_storage = CloudStorageMetadata(disks=["other"])
+    with pytest.raises(StorageError):
+        layout.upload_backup_metadata(metadata)
+    assert objects[descriptor_path] == original

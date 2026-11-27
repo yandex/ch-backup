@@ -739,12 +739,9 @@ class TableBackup(BackupManager):
         self,
         context: BackupContext,
         databases: dict[str, Database],
-        schema_only: bool,
+        disks: ClickHouseTemporaryDisks | None,
         tables: list[TableMetadata],
         metadata_cleaner: MetadataCleaner | None,
-        cloud_storage_source_bucket: str | None,
-        cloud_storage_source_path: str | None,
-        cloud_storage_source_endpoint: str | None,
         skip_cloud_storage: bool,
         restore_detached_parts: bool,
         keep_going: bool,
@@ -826,7 +823,7 @@ class TableBackup(BackupManager):
                         key, "Table schema restore failed"
                     )
 
-            if schema_only:
+            if disks is None:
                 logging.debug(
                     "Skipping restoring of table data as --schema-only flag passed"
                 )
@@ -860,36 +857,18 @@ class TableBackup(BackupManager):
                     and f"`{table.database}`.`{table.name}`" not in failed_tables_names
                 ]
 
-                use_inplace_cloud_restore = context.config_root["restore"][
-                    "use_inplace_cloud_restore"
-                ]
-
-                with ClickHouseTemporaryDisks(
-                    context.ch_ctl,
-                    context.backup_layout,
-                    context.config_root,
-                    context.backup_meta,
-                    cloud_storage_source_bucket,
-                    cloud_storage_source_path,
-                    cloud_storage_source_endpoint,
-                    context.ch_config,
-                    desired_tables=tables_meta,
-                    use_local_copy=use_inplace_cloud_restore,
+                self._restore_data(
+                    context,
+                    tables=tables_to_restore_data,
+                    disks=disks,
                     skip_cloud_storage=skip_cloud_storage,
                     keep_going=keep_going,
-                ) as disks:
-                    self._restore_data(
-                        context,
-                        tables=tables_to_restore_data,
-                        disks=disks,
-                        skip_cloud_storage=skip_cloud_storage,
-                        keep_going=keep_going,
-                        storage_disks=(
-                            storage_restore.storage_disks
-                            if storage_restore is not None
-                            else None
-                        ),
-                    )
+                    storage_disks=(
+                        storage_restore.storage_disks
+                        if storage_restore is not None
+                        else None
+                    ),
+                )
 
                 if restore_detached_parts and any(
                     table.get_detached_parts() for table in tables_to_restore_detached
@@ -1850,7 +1829,7 @@ class TableBackup(BackupManager):
                     table_meta.database, table_meta.name
                 )  # type: ignore
                 attach_parts: list[PartMetadata] = []
-                failed_parts: set[str] = set()
+                failed_part_identities: set[tuple[str, str, str]] = set()
 
                 # Both pools collect these callbacks before the next table.
                 # pylint: disable=cell-var-from-loop
@@ -1861,9 +1840,12 @@ class TableBackup(BackupManager):
                     attach_parts.append(part)
 
                 def download_failed(part: PartMetadata, error: BaseException) -> None:
-                    if not isinstance(error, Exception) or part.name in failed_parts:
+                    if (
+                        not isinstance(error, Exception)
+                        or part.logical_identity in failed_part_identities
+                    ):
                         return
-                    failed_parts.add(part.name)
+                    failed_part_identities.add(part.logical_identity)
                     context.restore_context.add_failed_part(part, error)
                     context.restore_context.change_part_state(PartState.INVALID, part)
                     logging.warning(

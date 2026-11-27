@@ -20,7 +20,7 @@ from ch_backup.storage.async_pipeline.base_pipeline.map import thread_map
 from ch_backup.storage.async_pipeline.stages import (
     ChunkingStage,
     CollectDataStage,
-    CompleteMultipartUploadStage,
+    CompleteStorageUploadStage,
     CompressStage,
     DecompressStage,
     DecryptStage,
@@ -275,7 +275,7 @@ class PipelineBuilder:
                 workers=stage_config["uploading_threads"],
             ),
             thread_map(
-                CompleteMultipartUploadStage(stage_config, storage, remote_path),
+                CompleteStorageUploadStage(stage_config, storage, remote_path),
                 maxsize=queue_size,
             ),
         ]

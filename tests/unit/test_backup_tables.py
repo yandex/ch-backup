@@ -2317,24 +2317,20 @@ def test_restore_skips_unreadable_database_schemas(
             TableBackup().restore(
                 context=context,
                 databases={"db1": DATABASE, "db2": other_db},
-                schema_only=False,
+                disks=MagicMock(),
                 tables=[],
                 metadata_cleaner=None,
-                cloud_storage_source_bucket=None,
-                cloud_storage_source_path=None,
-                cloud_storage_source_endpoint=None,
                 skip_cloud_storage=skip_cloud_storage,
                 restore_detached_parts=True,
                 keep_going=keep_going,
                 restore_tables_in_replicated_database=False,
             )
 
-        with patch("ch_backup.logic.table.ClickHouseTemporaryDisks"):
-            if keep_going:
+        if keep_going:
+            restore()
+        else:
+            with pytest.raises(S3RetryingError, match="S3 GetObject failed"):
                 restore()
-            else:
-                with pytest.raises(S3RetryingError, match="S3 GetObject failed"):
-                    restore()
     finally:
         logger.remove(sink)
 

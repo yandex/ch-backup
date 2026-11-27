@@ -177,6 +177,10 @@ class TableMetadata(SimpleNamespace):
             "disk_name": part.disk_name,
             "encrypted": part.encrypted,
         }
+        if part.cloud_storage_fingerprint is not None:
+            self.raw_metadata["parts"][part.name][
+                "cloud_storage_fingerprint"
+            ] = part.cloud_storage_fingerprint
 
     def get_detached_parts(self) -> list[DetachedPartMetadata]:
         """Return detached parts sorted by disk and original directory name."""

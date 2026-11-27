@@ -632,11 +632,8 @@ class BackupChecker:
     ) -> dict[str, dict[str, CloudFile]]:
         """Find the archive restore reads and return its parsed part files."""
         layout = self._layout()
-        remote_paths = layout.get_cloud_storage_metadata_remote_paths(
-            backup.get_sanitized_name(),
-            key.item,
-            backup.cloud_storage.compressed,
-            [obj["table"]],
+        remote_paths = layout.list_restore_metadata_archives(
+            backup, key.item, [obj["table"]]
         )
         legacy_path = layout.get_legacy_disk_metadata_path(
             backup.get_sanitized_name(), key.item, backup.cloud_storage.compressed
@@ -654,7 +651,7 @@ class BackupChecker:
             files = [
                 entry
                 for remote_path in remote_paths
-                for entry in layout.get_cloud_storage_metadata_files(
+                for entry in layout.read_cloud_storage_metadata_archive(
                     backup, remote_path
                 )
             ]

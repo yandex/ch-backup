@@ -134,7 +134,8 @@ Feature: Backup & Clean & Restore
       | 6   | created  | 0          | 8            | links         |
       | 5   | created  | 4          | 4            | shared+links  |
       | 7   | created  | 4          | 0            | shared        |
-    And s3 contains 92 objects
+    # Each backup includes databases.tar as well as its table metadata archives.
+    And s3 contains 100 objects
 
   Scenario: Attempt to delete "unusual_char" backup succeeds
     When we delete clickhouse01 clickhouse backup #0
@@ -147,7 +148,7 @@ Feature: Backup & Clean & Restore
       | 4   | created           | 0          | 8            | links         |
       | 5   | created           | 4          | 4            | shared+links  |
       | 6   | created           | 4          | 0            | shared        |
-    And s3 contains 72 objects
+    And s3 contains 79 objects
 
   Scenario: Attempt to delete "shared" backup deletes no data
     When we delete clickhouse01 clickhouse backup #6
@@ -192,7 +193,7 @@ Feature: Backup & Clean & Restore
       | 2   | created           | 12         | 0            | shared+data  |
       | 3   | partially_deleted | 4          | 0            | shared+links |
       | 4   | partially_deleted | 4          | 0            | shared       |
-    And s3 contains 62 objects
+    And s3 contains 67 objects
 
   Scenario: Attempt to delete "shared + data" backup deletes non-shared data only
     When we delete clickhouse01 clickhouse backup #2
@@ -203,7 +204,7 @@ Feature: Backup & Clean & Restore
       | 2   | partially_deleted | 9          | 0            | shared+data  |
       | 3   | partially_deleted | 4          | 0            | shared+links |
       | 4   | partially_deleted | 4          | 0            | shared       |
-    And s3 contains 59 objects
+    And s3 contains 64 objects
 
   Scenario: Attempt to delete  "links + data" backup succeeds
     When we delete clickhouse01 clickhouse backup #1
@@ -213,7 +214,7 @@ Feature: Backup & Clean & Restore
       | 1   | partially_deleted | 9          | 0            | shared+data  |
       | 2   | partially_deleted | 4          | 0            | shared+links |
       | 3   | partially_deleted | 4          | 0            | shared       |
-    And s3 contains 50 objects
+    And s3 contains 54 objects
 
   Scenario: Attempt to delete  "data" backup succeeds
     When we delete clickhouse01 clickhouse backup #0
@@ -222,7 +223,7 @@ Feature: Backup & Clean & Restore
       | 0   | partially_deleted | 9          | 0            | shared+data  |
       | 1   | partially_deleted | 4          | 0            | shared+links |
       | 2   | partially_deleted | 4          | 0            | shared       |
-    And s3 contains 32 objects
+    And s3 contains 35 objects
 
   Scenario: Attempt to delete "shared+data" with purge partially succeeds
     When we delete clickhouse01 clickhouse backup #0

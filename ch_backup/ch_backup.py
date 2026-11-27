@@ -8,15 +8,18 @@ import builtins
 import os
 from collections import defaultdict
 from contextlib import ExitStack, suppress
-from copy import copy
+from copy import copy, deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Sequence
+from functools import partial
+from typing import Any, Callable, Mapping, Sequence
 
 import requests
 
 from ch_backup import logging
 from ch_backup.backup.checker import BackupChecker, BackupCheckResult
+from ch_backup.backup.cloud_cleanup import CloudObjectDeletionIndex
 from ch_backup.backup.copier import BackupCopier
 from ch_backup.backup.copy_deduplication import copy_deduplication_cutoff
 from ch_backup.backup.copy_report import CopyReport
@@ -39,6 +42,7 @@ from ch_backup.backup.sources import BackupSources
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.control import ClickhouseCTL
+from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
 from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner, select_replica_drop
 from ch_backup.clickhouse.models import Database, Table
 from ch_backup.clickhouse.part_checksums import CLICKHOUSE_BINARY
@@ -47,6 +51,7 @@ from ch_backup.encryption import validate_cloud_storage_data_encryption_config
 from ch_backup.exceptions import (
     BackupNotFound,
     ClickhouseBackupError,
+    ConfigurationError,
     InvalidBackupStruct,
     StorageError,
     TerminatingSignal,
@@ -62,9 +67,15 @@ from ch_backup.logic.table import TableBackup
 from ch_backup.logic.udf import UDFBackup
 from ch_backup.logic.workload_entities import WorkloadEntitiesBackup
 from ch_backup.storage.async_pipeline.stages import EncryptStage
+from ch_backup.storage.engine import delete_key_batches, get_storage_engine
 from ch_backup.storage.engine.s3 import validate_s3_retry_config
 from ch_backup.storage.engine.s3.s3_config import validate_s3_module_config
-from ch_backup.storage.object_copy import parse_server_side_copy_mode
+from ch_backup.storage.object_copy import (
+    normalize_s3_endpoint,
+    parse_server_side_copy_mode,
+    prefixes_overlap,
+    same_storage,
+)
 from ch_backup.util import cached_property, now, utcnow
 from ch_backup.version import get_version
 
@@ -77,6 +88,22 @@ class CleanZooKeeperMode(str, Enum):
     DISABLED = "disabled"
     REPLICA_ONLY = "replica-only"
     ALL_REPLICAS = "all-replicas"
+
+
+@dataclass(frozen=True)
+class _CloudCleanupPlan:
+    """Prepared cloud operations for one backup's deletion.
+
+    A retained cloud part keeps the owner's archives and objects together.
+    The executor records completed external deletion before removing archives.
+    Cloud files in backup storage are removed separately because local parts
+    can keep the rest of the backup alive.
+    """
+
+    empty_link_disks: frozenset[str] = frozenset()
+    keep_frozen_data: bool = False
+    delete_external_payload: Callable[[], None] | None = None
+    delete_backup_cloud_files: Callable[[], None] | None = None
 
 
 # pylint: disable=too-many-instance-attributes
@@ -391,27 +418,16 @@ class ClickhouseBackup:
         )
 
         cloud_storage_source = self._context.backup_meta.cloud_storage.source
-        if cloud_storage_source_bucket is None and cloud_storage_source:
-            # Cloud storage data was copied out of the source disk along with the backup.
-            cloud_storage_source_bucket = cloud_storage_source["bucket"]
-            cloud_storage_source_path = (
-                cloud_storage_source_path or cloud_storage_source["path"]
-            )
-            cloud_storage_source_endpoint = (
-                cloud_storage_source_endpoint or cloud_storage_source["endpoint_url"]
-            )
-            logging.info(
-                "Using cloud storage data location from backup metadata: bucket {}, path {}",
-                cloud_storage_source_bucket,
-                cloud_storage_source_path,
-            )
-
         if (
             cloud_storage_source_bucket is None
             and sources.data
             and not skip_cloud_storage
         ):
-            if self._context.backup_meta.cloud_storage.requires_source_bucket:
+            if (
+                self._context.backup_meta.cloud_storage.requires_source_bucket
+                and self._context.backup_meta.select_disks_with_stored_cloud_parts()
+                and not cloud_storage_source
+            ):
                 raise ClickhouseBackupError(
                     "Cloud storage source bucket must be set if backup has data on S3 disks"
                 )
@@ -599,10 +615,15 @@ class ClickhouseBackup:
             self._context.backup_layout.claim_cloud_storage(backup_name, adopt=True)
 
     def delete(
-        self, backup_name: str, purge_partial: bool, *, delete_unreadable: bool = False
+        self,
+        backup_name: str,
+        purge_partial: bool,
+        delete_cloud_storage_data: bool = False,
+        *,
+        delete_unreadable: bool = False,
     ) -> tuple[str | None, str | None]:
         """
-        Delete the specified backup.
+        Delete the named backup and optionally purge other incomplete backups.
         """
         delete_unreadable = delete_unreadable or self._context.config.get(
             "delete_unreadable", False
@@ -668,6 +689,7 @@ class ClickhouseBackup:
                 pending_names,
                 broken,
                 delete_unreadable,
+                delete_cloud_storage_data,
             )
             result = results.get(backup_name, (None, None))
 
@@ -731,7 +753,10 @@ class ClickhouseBackup:
         return BackupChecker(self._config, deep, workers, tmp_dir).check(backup_names)
 
     def purge(
-        self, *, delete_unreadable: bool = False
+        self,
+        delete_cloud_storage_data: bool = False,
+        *,
+        delete_unreadable: bool = False,
     ) -> tuple[Sequence[str], str | None]:
         """
         Purge backups.
@@ -765,7 +790,9 @@ class ClickhouseBackup:
                 return [], "Retain policies are not specified."
             unreadable: dict[str, str] = {}
             backups = layout.get_backups(
-                use_light_meta=True, unreadable=unreadable, strict_inventory=True
+                use_light_meta=True,
+                unreadable=unreadable,
+                strict_inventory=True,
             )
             if unreadable and (not delete_unreadable or not has_retention):
                 raise StorageError(
@@ -826,6 +853,7 @@ class ClickhouseBackup:
                 set(pending),
                 unreadable,
                 delete_unreadable,
+                delete_cloud_storage_data,
             )
             deleted_backup_names.extend(
                 name for name, (deleted, _) in results.items() if deleted
@@ -874,8 +902,73 @@ class ClickhouseBackup:
         retain_time = self._context.config.get("retain_incomplete_copy_time")
         return now() - timedelta(**retain_time) if retain_time else None
 
-    def _delete(
-        self, backup_light_meta: BackupMetadata, dedup_references: DedupReferences
+    def _load_metadata_for_deletion(
+        self, light_metadata: BackupMetadata, dedup_references: DedupReferences
+    ) -> tuple[BackupMetadata, bool]:
+        """Load part metadata needed to preserve references during deletion.
+
+        If no backup references this one, allow whole-backup deletion using
+        light metadata when full metadata is unavailable.
+        """
+        try:
+            full_metadata = self._context.backup_layout.get_backup(light_metadata.name)
+        except StorageError:
+            if dedup_references:
+                raise
+            logging.exception(
+                "Full metadata of backup {} is unreadable, deleting it by light metadata",
+                light_metadata.name,
+            )
+            full_metadata = None
+        if full_metadata is None and dedup_references:
+            raise InvalidBackupStruct(
+                f"Full metadata is missing for referenced backup {light_metadata.name}"
+            )
+        return full_metadata or light_metadata, full_metadata is None
+
+    def _prepare_deletion_batch(
+        self,
+        backups_to_delete: Sequence[BackupMetadata],
+        dedup_references: dict[str, DedupReferences],
+        delete_cloud_storage_data: bool,
+    ) -> builtins.list[tuple[BackupMetadata, bool, _CloudCleanupPlan]]:
+        """Prepare each backup's deletion before changing any backup in the batch.
+
+        Retain loaded metadata and planned cloud operations so execution uses
+        the data validated here without downloading it again.
+        A bad later backup must not cause earlier backups to be deleted.
+        """
+        prepared_deletions = []
+        for light_metadata in backups_to_delete:
+            references = dedup_references[light_metadata.name]
+            backup, metadata_is_light = self._load_metadata_for_deletion(
+                light_metadata, references
+            )
+            cloud_cleanup_action = self._prepare_backup_cloud_cleanup(
+                backup, references, delete_cloud_storage_data
+            )
+            prepared_deletions.append((backup, metadata_is_light, cloud_cleanup_action))
+        logging.info(
+            "Deletion batch validated: backups={}, cloud_cleanup_actions={}; no deletion started during validation",
+            len(prepared_deletions),
+            sum(
+                any(
+                    (
+                        plan.delete_external_payload,
+                        plan.delete_backup_cloud_files,
+                    )
+                )
+                for _, _, plan in prepared_deletions
+            ),
+        )
+        return prepared_deletions
+
+    def _execute_backup_deletion(
+        self,
+        backup: BackupMetadata,
+        dedup_references: DedupReferences,
+        metadata_is_light: bool,
+        cloud_cleanup: _CloudCleanupPlan,
     ) -> tuple[str | None, str | None]:
         """
         Delete a backup, keeping the parts other backups link to.
@@ -885,33 +978,25 @@ class ClickhouseBackup:
         """
         logging.info(
             "Deleting backup {}, state: {}",
-            backup_light_meta.name,
-            backup_light_meta.state,
+            backup.name,
+            backup.state,
         )
 
-        try:
-            backup = self._context.backup_layout.get_backup(backup_light_meta.name)
-        except StorageError:
-            if dedup_references:
-                raise
-            logging.exception(
-                "Full metadata of backup {} is unreadable, deleting it by light metadata",
-                backup_light_meta.name,
-            )
-            backup = None
-        if backup is None and dedup_references:
-            raise InvalidBackupStruct(
-                f"Full metadata is missing for referenced backup {backup_light_meta.name}"
-            )
-        light_only = backup is None
-        backup = backup or backup_light_meta
         backup.state = BackupState.DELETING
         backup.exception = None
 
         try:
             self._context.backup_layout.upload_backup_metadata(
-                backup, light_only=light_only
+                backup, light_only=metadata_is_light
             )
+            if cloud_cleanup.delete_external_payload:
+                cloud_cleanup.delete_external_payload()
+                backup.cloud_storage.source = None
+                # Save completion before removing the archives that identify external
+                # objects. A retry can then finish without those deletion inputs.
+                self._context.backup_layout.upload_backup_metadata(
+                    backup, light_only=metadata_is_light
+                )
             if not dedup_references:
                 logging.info("Removing backup data entirely")
                 self._context.backup_layout.delete_backup(
@@ -921,6 +1006,10 @@ class ClickhouseBackup:
                 return backup.name, None
 
             logging.info("Removing non-shared backup data parts")
+            if cloud_cleanup.empty_link_disks:
+                backup.cloud_storage.retain_disks(
+                    set(backup.cloud_storage.disks) - cloud_cleanup.empty_link_disks
+                )
             for db_name in backup.get_databases():
                 db_dedup_references = dedup_references[db_name]
                 for table in backup.get_tables(db_name):
@@ -929,21 +1018,14 @@ class ClickhouseBackup:
                     )
                     self._delete_detached_parts(backup, table)
 
-            if backup.cloud_storage.enabled or (
-                backup.cloud_storage.data_copied
-                and backup.count_skipped_data_tables()[0]
-            ):
-                if self._cloud_storage_data_is_shared(backup, dedup_references):
-                    logging.info(
-                        "Keeping cloud storage data of the backup, it is in use by subsequent backups"
-                    )
-                else:
-                    self._context.backup_layout.delete_cloud_storage_data(backup.name)
+            if cloud_cleanup.delete_backup_cloud_files:
+                cloud_cleanup.delete_backup_cloud_files()
             self._context.backup_layout.wait()
-            self._system_unfreeze(backup)
+            if not cloud_cleanup.keep_frozen_data:
+                self._system_unfreeze(backup)
             backup.state = BackupState.PARTIALLY_DELETED
             self._context.backup_layout.upload_backup_metadata(
-                backup, light_only=light_only
+                backup, light_only=metadata_is_light
             )
             return (
                 None,
@@ -956,7 +1038,7 @@ class ClickhouseBackup:
             backup.state = BackupState.FAILED
             backup.exception = f"{type(e).__name__}: {e}"
             self._context.backup_layout.upload_backup_metadata(
-                backup, light_only=light_only
+                backup, light_only=metadata_is_light
             )
             raise
 
@@ -967,6 +1049,7 @@ class ClickhouseBackup:
         pending: set[str],
         unreadable: dict[str, str],
         delete_unreadable: bool,
+        delete_cloud_storage_data: bool = False,
     ) -> dict[str, tuple[str | None, str | None]]:
         """Validate all retained references before changing deletion targets or intents."""
         layout = self._context.backup_layout
@@ -983,6 +1066,12 @@ class ClickhouseBackup:
                 unreadable[backup.name] = self._metadata_failure_reason(error)
             else:
                 normal.append(backup)
+        if delete_cloud_storage_data and (unreadable or pending):
+            # Pending deletion can recover backup-owned data from its ownership
+            # records, but cannot establish an unreadable copy's external target.
+            raise InvalidBackupStruct(
+                "Cannot delete external cloud storage data without readable backup metadata"
+            )
         if unreadable and not delete_unreadable:
             raise StorageError(
                 f"Metadata is unavailable for {', '.join(sorted(unreadable))}; use --delete-unreadable to devalue these backups"
@@ -993,12 +1082,23 @@ class ClickhouseBackup:
                     "Pending deletion requires lock.zk_flock shared by all backup/copy/delete writers"
                 )
         pending |= set(unreadable)
+        for name in pending:
+            descriptor = layout.get_cloud_storage_backup(name)
+            if descriptor and descriptor.cloud_storage.source:
+                self._check_cloud_deletion_overlap(
+                    name, descriptor.cloud_storage.source
+                )
+            for location, _keys in layout.read_cloud_copy_manifest(name):
+                self._check_cloud_deletion_overlap(name, location)
         referenced_by: dict[str, set[str]] = {}
         references = collect_dedup_references_for_batch_backup_deletion(
             layout=layout,
             retained_backups_light_meta=retained,
             deleting_backup_names={backup.name for backup in normal} | pending,
             referenced_by=referenced_by,
+        )
+        prepared_deletions = self._prepare_deletion_batch(
+            normal, references, delete_cloud_storage_data
         )
         for name, reason in unreadable.items():
             layout.save_delete_pending(
@@ -1011,8 +1111,13 @@ class ClickhouseBackup:
                 ),
             )
         results = {}
-        for backup in normal:
-            results[backup.name] = self._delete(backup, references[backup.name])
+        for backup, metadata_is_light, cloud_cleanup in prepared_deletions:
+            results[backup.name] = self._execute_backup_deletion(
+                backup,
+                references[backup.name],
+                metadata_is_light,
+                cloud_cleanup,
+            )
         for name in sorted(pending):
             try:
                 complete = layout.clean_pending_backup(
@@ -1049,33 +1154,277 @@ class ClickhouseBackup:
             else "metadata_unavailable"
         )
 
-    @staticmethod
-    def _cloud_storage_data_is_shared(
-        backup: BackupMetadata, dedup_references: DedupReferences
-    ) -> bool:
-        """
-        Return True if parts of cloud storage disks of a backup are reused.
-
-        Keys of the objects are known only from the disk metadata inside the
-        backup, so its data is kept whole until the last reference is gone.
-        """
-        return any(
-            part.name in dedup_references[table.database][table.name]
-            and part.disk_name in backup.cloud_storage.disks
-            for table in backup.get_tables()
-            for part in table.get_parts()
+    def _prepare_backup_cloud_cleanup(
+        self, backup: BackupMetadata, references: DedupReferences, delete_external: bool
+    ) -> _CloudCleanupPlan:
+        # Until every scope completes, the backup retains the source installation's
+        # location for resume. Only the transfer manifest identifies destination keys.
+        incomplete = bool(
+            backup.copied_from
+            and not backup.cloud_storage.data_copied
+            and backup.copy_scopes
+            and any(
+                backup.copy_scopes.get(scope) != CopyScopeStatus.COMPLETED
+                for scope in CopyScope
+            )
         )
+        source = backup.cloud_storage.source
+        if source and not incomplete:
+            self._check_cloud_deletion_overlap(backup.name, source)
+        history = (
+            self._context.backup_layout.read_cloud_copy_manifest(backup.name)
+            if backup.copied_from
+            and not backup.cloud_storage.data_copied
+            and (backup.cloud_storage.enabled or source)
+            else []
+        )
+        for location, _keys in history:
+            self._check_cloud_deletion_overlap(backup.name, location)
 
-    def _system_unfreeze(self, backup: BackupMetadata) -> None:
-        if backup.cloud_storage.source:
-            source = backup.cloud_storage.source
+        retained_cloud_disks = (
+            {
+                part.disk_name
+                for table in backup.get_tables()
+                for part in table.get_parts()
+                if part.disk_name in backup.cloud_storage.disks
+                and part.name in references.get(part.database, {}).get(part.table, ())
+            }
+            if references and backup.cloud_storage.enabled
+            else set()
+        )
+        empty_link_disks: frozenset[str] = frozenset()
+        if references and source and not incomplete:
+            # Once the last outgoing link disappears, a disk without an archive
+            # looks like a missing cleanup input. Forget only proven empty disks.
+            link_only = set(backup.cloud_storage.disks) - set(
+                backup.select_disks_with_stored_cloud_parts()
+            )
+            empty_link_disks = frozenset(
+                disk
+                for disk in link_only - retained_cloud_disks
+                if not self._context.backup_layout.list_cloud_storage_metadata_archives(
+                    backup.get_sanitized_name(),
+                    disk,
+                    backup.cloud_storage.compressed,
+                    "all",
+                )
+            )
+        if retained_cloud_disks:
+            logging.info(
+                "Keeping cloud objects and archives of referenced backup {}",
+                backup.name,
+            )
+            return _CloudCleanupPlan(
+                empty_link_disks=empty_link_disks,
+                keep_frozen_data=not backup.copied_from
+                and not backup.cloud_storage.data_copied,
+            )
+        external_target = None
+        if not incomplete and delete_external:
+            external_target = self._resolve_external_cloud_deletion_target(backup)
+        elif source and not incomplete:
             logging.warning(
                 "Cloud storage data of backup {} stored in bucket {} under {} is not deleted",
                 backup.name,
                 source["bucket"],
                 source["path"],
             )
+        destinations = []
+        if delete_external:
+            for location, keys in history:
+                target = self._resolve_external_cloud_deletion_target(backup, location)
+                assert target is not None
+                destinations.append((target[0], keys))
+        return self._prepare_cloud_cleanup_plan(
+            backup,
+            references,
+            external_target,
+            history=destinations,
+            empty_link_disks=empty_link_disks,
+        )
 
+    def _check_cloud_deletion_overlap(
+        self, name: str, location: Mapping[str, Any]
+    ) -> None:
+        """Recursive removal of either backup directory also removes external keys below it."""
+        storage = self._config["storage"]
+        if same_storage(
+            storage,
+            {
+                "type": storage["type"],
+                "credentials": {
+                    "endpoint_url": location.get("endpoint_url"),
+                    "bucket": location.get("bucket"),
+                },
+            },
+        ):
+            root = self._config["backup"]["path_root"]
+            for directory in (name, sanitize_backup_name(name)):
+                if prefixes_overlap(
+                    location["path"].strip("/"),
+                    os.path.join(root, directory).strip("/"),
+                ):
+                    raise ConfigurationError(
+                        "External cloud storage prefix overlaps backup metadata"
+                    )
+
+    def _prepare_cloud_cleanup_plan(
+        self,
+        backup: BackupMetadata,
+        retained_part_references: DedupReferences,
+        external_target: tuple[dict, str] | None,
+        *,
+        history: Sequence[tuple[dict, CloudObjectDeletionIndex]] = (),
+        empty_link_disks: frozenset[str] = frozenset(),
+    ) -> _CloudCleanupPlan:
+        """Prepare whole-owner cleanup once retained backups release their cloud parts."""
+        layout = self._context.backup_layout
+        if retained_part_references and not (
+            history
+            or external_target
+            or backup.cloud_storage.enabled
+            or (
+                backup.cloud_storage.data_copied
+                and backup.count_skipped_data_tables()[0]
+            )
+        ):
+            return _CloudCleanupPlan()
+        # Only the manifest describes an unfinished copy's destination. For a
+        # completed copy, include both the archives and earlier transfer plans.
+        historical = []
+        same_bucket = []
+        for storage, keys in history:
+            if external_target and same_storage(storage, external_target[0]):
+                same_bucket.append(keys)
+            else:
+                historical.append((storage, keys))
+        if external_target:
+            payload_storage, object_prefix = external_target
+            keys = layout.collect_cloud_object_keys_for_deletion(backup, object_prefix)
+            for old_keys in same_bucket:
+                keys.update(old_keys)
+            historical.append((payload_storage, keys))
+
+        def delete_payload():
+            for storage, planned_keys in historical:
+                self._delete_external_cloud_payload(backup.name, storage, planned_keys)
+
+        delete_backup_cloud_files = None
+        if retained_part_references and (historical or not backup.cloud_storage.source):
+            # Whole-backup deletion removes these files with the rest of the backup.
+            # A partially retained backup needs this separate, prepared operation.
+            delete_backup_cloud_files = partial(
+                layout.delete_backup_cloud_files, backup.name
+            )
+        return _CloudCleanupPlan(
+            empty_link_disks=empty_link_disks,
+            delete_external_payload=delete_payload if historical else None,
+            delete_backup_cloud_files=delete_backup_cloud_files,
+        )
+
+    def _resolve_external_cloud_deletion_target(
+        self, backup: BackupMetadata, recorded_location: Mapping[str, Any] | None = None
+    ) -> tuple[dict, str] | None:
+        """Resolve credentials and validate a recorded external copy location.
+
+        Return None when the backup has no external copy location. Otherwise,
+        check the recorded location against the configured endpoint, bucket,
+        and backup-prefix constraints.
+        """
+        if recorded_location is None:
+            recorded_location = backup.cloud_storage.source
+        if not recorded_location:
+            return None
+
+        object_prefix = recorded_location.get("path", "").strip("/")
+        if (
+            not backup.copied_from
+            or not recorded_location.get("bucket")
+            or not object_prefix
+            or object_prefix.split("/")[-1] != backup.name
+            or any(component in (".", "..") for component in object_prefix.split("/"))
+        ):
+            raise ConfigurationError(
+                "External cloud storage deletion requires a copied backup with a backup-specific prefix"
+            )
+
+        payload_storage = deepcopy(self._config["storage"])
+        payload_credentials = payload_storage["credentials"]
+        configured_copy_target = self._config["copy"]["cloud_storage"]["target"]
+        configured_endpoint = (
+            configured_copy_target.get("endpoint_url")
+            or payload_credentials["endpoint_url"]
+        )
+        if normalize_s3_endpoint(configured_endpoint) != normalize_s3_endpoint(
+            recorded_location.get("endpoint_url")
+        ):
+            raise ConfigurationError(
+                "Cloud storage endpoint in backup metadata does not match the configured endpoint; "
+                'set "copy.cloud_storage.target.endpoint_url" explicitly'
+            )
+        if (
+            configured_copy_target.get("bucket")
+            and configured_copy_target["bucket"] != recorded_location["bucket"]
+        ):
+            raise ConfigurationError(
+                "Cloud storage bucket in backup metadata does not match copy.cloud_storage.target.bucket"
+            )
+        self._check_cloud_deletion_overlap(backup.name, recorded_location)
+
+        payload_credentials["endpoint_url"] = configured_endpoint
+        payload_credentials["bucket"] = recorded_location["bucket"]
+        if configured_copy_target.get("access_key_id"):
+            payload_credentials["access_key_id"] = configured_copy_target[
+                "access_key_id"
+            ]
+            payload_credentials["secret_access_key"] = configured_copy_target.get(
+                "secret_access_key"
+            )
+        payload_storage["proxy_resolver"] = {"uri": None, "proxy_port": None}
+        return payload_storage, object_prefix
+
+    def _delete_external_cloud_payload(
+        self,
+        backup_name: str,
+        payload_storage: dict,
+        object_keys_to_delete: CloudObjectDeletionIndex,
+    ) -> None:
+        """Delete planned external payload objects without changing backup metadata."""
+        credentials = payload_storage["credentials"]
+        payload_engine = get_storage_engine(payload_storage)
+
+        logging.info(
+            "Cloud cleanup planned: backup={}, bucket={}, planned={} object keys",
+            backup_name,
+            credentials["bucket"],
+            len(object_keys_to_delete),
+        )
+        confirmed = 0
+        try:
+            for count in delete_key_batches(
+                payload_engine,
+                object_keys_to_delete,
+                payload_storage["bulk_delete_chunk_size"],
+            ):
+                confirmed += count
+        except (Exception, TerminatingSignal):
+            logging.error(
+                "Cloud cleanup failed: backup={}, bucket={}, confirmed={}, planned={}; "
+                "the failed batch may be partially deleted; retry cleanup",
+                backup_name,
+                credentials["bucket"],
+                confirmed,
+                len(object_keys_to_delete),
+            )
+            raise
+        logging.info(
+            "Cloud cleanup completed: backup={}, bucket={}, confirmed={} object-key deletions",
+            backup_name,
+            credentials["bucket"],
+            confirmed,
+        )
+
+    def _system_unfreeze(self, backup: BackupMetadata) -> None:
         # Copied backups don't own frozen data, it belongs to the original backup.
         if backup.copied_from:
             logging.info("Skipping unfreeze for the copied backup {}", backup.name)
@@ -1090,8 +1439,14 @@ class ClickhouseBackup:
         excluded_parts: set[str] = None,
     ) -> None:
         parts = table.get_parts(excluded_parts=excluded_parts)
-        own_parts = [part for part in parts if not part.link]
-        self._context.backup_layout.delete_data_parts(backup, own_parts)
+        unlinked_parts_on_local_disks = [
+            part
+            for part in parts
+            if not part.link and part.disk_name not in backup.cloud_storage.disks
+        ]
+        self._context.backup_layout.delete_data_parts(
+            backup, unlinked_parts_on_local_disks
+        )
         backup.remove_parts(table, parts)
 
     def _delete_detached_parts(
@@ -1165,9 +1520,10 @@ class ClickhouseBackup:
 
             # Validate adapted schemas before DatabaseBackup can drop an entire
             # database. Reuse the prepared tables and locks through table CREATE.
-            with ExitStack() as schema_locks:
+            with ExitStack() as disk_stack, ExitStack() as schema_locks:
                 prepared_restore = None
-                if skip_cloud_storage:
+                disks = None
+                if skip_cloud_storage or sources.data:
                     prepared_restore = self._table_backup_manager.prepare_restore(
                         self._context,
                         databases,
@@ -1176,6 +1532,26 @@ class ClickhouseBackup:
                         skip_cloud_storage,
                         restore_tables_in_replicated_database,
                         schema_locks,
+                    )
+                # Resolve owners and staging before database restore can drop existing data.
+                if sources.data and prepared_restore and prepared_restore.tables_meta:
+                    disks = disk_stack.enter_context(
+                        ClickHouseTemporaryDisks(
+                            self._context.ch_ctl,
+                            self._context.backup_layout,
+                            self._context.config_root,
+                            self._context.backup_meta,
+                            cloud_storage_source_bucket,
+                            cloud_storage_source_path,
+                            cloud_storage_source_endpoint,
+                            self._context.ch_config,
+                            desired_tables=prepared_restore.tables_meta,
+                            use_local_copy=self._context.config_root["restore"][
+                                "use_inplace_cloud_restore"
+                            ],
+                            skip_cloud_storage=skip_cloud_storage,
+                            keep_going=keep_going,
+                        )
                     )
                 # Restore databases.
                 restored_databases = self._database_backup_manager.restore(
@@ -1196,12 +1572,9 @@ class ClickhouseBackup:
                 self._table_backup_manager.restore(
                     context=self._context,
                     databases=databases,
-                    schema_only=sources.schema_only,
+                    disks=disks,
                     tables=tables,
                     metadata_cleaner=metadata_cleaner,
-                    cloud_storage_source_bucket=cloud_storage_source_bucket,
-                    cloud_storage_source_path=cloud_storage_source_path,
-                    cloud_storage_source_endpoint=cloud_storage_source_endpoint,
                     skip_cloud_storage=skip_cloud_storage,
                     restore_detached_parts=restore_detached_parts,
                     keep_going=keep_going,
