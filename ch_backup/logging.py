@@ -56,6 +56,20 @@ def _format(fmt, record):
     return result_fmt + "\n{exception}"
 
 
+def contains_aws_credentials(message: str) -> bool:
+    """Recognize AWS session tokens and signed URLs in SDK diagnostics."""
+    text = message.lower()
+    return any(
+        key in text
+        for key in (
+            "x-amz-security-token",
+            "x-amz-signature=",
+            "awsaccesskeyid=",
+            "'authorization':",
+        )
+    )
+
+
 class InterceptHandler(logging.Handler):
     """
     Helper class for logging interception.
@@ -67,6 +81,18 @@ class InterceptHandler(logging.Handler):
 
         The handler for loguru will be chosen based on module name.
         """
+
+        message = record.getMessage()
+        if record.name.startswith(("botocore.", "urllib3.", "s3transfer.")):
+            if record.name == "botocore.auth" and record.msg == "Signature:\n%s":
+                return
+            if contains_aws_credentials(message) or (
+                record.exc_info
+                and contains_aws_credentials(
+                    logging.Formatter().formatException(record.exc_info)
+                )
+            ):
+                return
 
         # Get corresponding Loguru level if it exists.
         level: int or str  # type: ignore
@@ -83,7 +109,7 @@ class InterceptHandler(logging.Handler):
 
         logger.bind(logger_name=record.name).opt(
             depth=depth, exception=record.exc_info
-        ).log(level, record.getMessage())
+        ).log(level, message)
 
 
 def configure(config_loguru: dict) -> None:

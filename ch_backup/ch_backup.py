@@ -47,6 +47,7 @@ from ch_backup.encryption import validate_cloud_storage_data_encryption_config
 from ch_backup.exceptions import (
     BackupNotFound,
     ClickhouseBackupError,
+    ConfigurationError,
     InvalidBackupStruct,
     StorageError,
     TerminatingSignal,
@@ -65,7 +66,10 @@ from ch_backup.storage.async_pipeline.restore import local_restore_options
 from ch_backup.storage.async_pipeline.stages import EncryptStage
 from ch_backup.storage.engine.s3 import validate_s3_retry_config
 from ch_backup.storage.engine.s3.s3_config import validate_s3_module_config
-from ch_backup.storage.object_copy import parse_server_side_copy_mode
+from ch_backup.storage.object_copy import (
+    parse_server_side_copy_mode,
+    validate_aws_config,
+)
 from ch_backup.util import cached_property, now, utcnow
 from ch_backup.version import get_version
 
@@ -100,7 +104,7 @@ class ClickhouseBackup:
         self._we_backup_manager = WorkloadEntitiesBackup()
 
     @staticmethod
-    def _validate_config(config: Config) -> None:
+    def _validate_config(config: Config, aws_config: dict | None = None) -> None:
         """Validate operation settings and explicit destructive policies."""
         if isinstance(config, Config):
             config.validate_restore_buffers()
@@ -117,6 +121,7 @@ class ClickhouseBackup:
         if config["storage"]["type"] == "s3":
             validate_s3_retry_config(config["storage"])
             validate_s3_module_config(config["storage"])
+            validate_aws_config(config["storage"], aws_config)
 
     @property
     def config(self) -> Config:
@@ -139,7 +144,7 @@ class ClickhouseBackup:
         """
         self._validate_config(config)
         logging.info("Reloading config.")
-        del self._context
+        self.__dict__.pop("_context", None)
         self._config = config
         logging.info("Config reloaded.")
 
@@ -195,6 +200,8 @@ class ClickhouseBackup:
         # pylint: disable=too-many-branches
         # pylint: disable=too-many-locals
         # pylint: disable=too-many-statements
+        if sources.data and self._config["cloud_storage"].get("copy_data"):
+            self._check_backup_disk_credentials()
         backups_with_light_meta = (
             self._context.backup_layout.get_backups(use_light_meta=True, unreadable={})
             if not force or self._context.config.get("deduplicate_parts")
@@ -329,6 +336,13 @@ class ClickhouseBackup:
                     self._context.ch_ctl.remove_freezed_data()
 
         return self._context.backup_meta.name, self._skipped_data_message()
+
+    def _check_backup_disk_credentials(self) -> None:
+        """Reject process credentials before creating temporary ClickHouse disks."""
+        if self._config["storage"]["credentials"].get("aws_config_file"):
+            raise ConfigurationError(
+                "Temporary ClickHouse disks require static backup storage credentials"
+            )
 
     def _skipped_data_message(self) -> str | None:
         """
@@ -480,6 +494,24 @@ class ClickhouseBackup:
         else:
             logging.debug("Picking all tables from backup.")
 
+        cloud = self._context.backup_meta.cloud_storage
+        if (
+            sources.data
+            and not skip_cloud_storage
+            and cloud.enabled
+            and self._config["storage"]["credentials"].get("aws_config_file")
+        ):
+            selected = tables or (
+                table
+                for db in databases
+                for table in self._context.backup_meta.get_tables(db)
+            )
+            if cloud.data_copied or any(
+                part.link and part.disk_name in cloud.disks
+                for table in selected
+                for part in table.get_parts()
+            ):
+                self._check_backup_disk_credentials()
         self._check_zookeeper_for_restore(sources, databases, tables)
 
         with self._context.locker(
@@ -701,7 +733,12 @@ class ClickhouseBackup:
             report.error = None
             report.backups.clear()
         try:
-            self._validate_config(target_config)
+            inherited = (
+                target_config.inherited_aws_config
+                if isinstance(target_config, Config)
+                else target_config["storage"].get("_aws_config")
+            )
+            self._validate_config(target_config, inherited)
             copier = BackupCopier(
                 config=self._config,
                 target_config=target_config,

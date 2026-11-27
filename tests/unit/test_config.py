@@ -159,6 +159,7 @@ storage:
         "endpoint_url": "https://s3.test",
         "access_key_id": None,
         "secret_access_key": None,
+        "aws_config_file": None,
         "bucket": "backups-copy",
     }
     assert derived["backup"]["path_root"] == "ch_backup_copy"

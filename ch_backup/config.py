@@ -216,6 +216,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "type": "s3",
         "credentials": {
             "endpoint_url": None,
+            "aws_config_file": None,
             "access_key_id": None,
             "secret_access_key": None,
             "bucket": None,
@@ -436,6 +437,8 @@ class Config:
     Config for all components
     """
 
+    _aws_config_source: dict | None = None
+
     def __init__(self, config_file: str, *, restore: bool = False) -> None:
         """Load command defaults, then apply the settings supplied by the operator."""
         self._conf = copy.deepcopy(DEFAULT_CONFIG)
@@ -464,12 +467,10 @@ class Config:
 
     def _recursively_update(self, base_dict, update_dict):
         for key, value in update_dict.items():
-            if isinstance(value, dict):
-                if key not in base_dict:
-                    base_dict[key] = {}
+            if isinstance(value, dict) and isinstance(base_dict.get(key), dict):
                 self._recursively_update(base_dict[key], update_dict[key])
             else:
-                base_dict[key] = value
+                base_dict[key] = copy.deepcopy(value)
 
     def merge(self, patch_dict):
         """
@@ -528,11 +529,30 @@ class Config:
         Return a copy of the config with applied changes from config file and the patch.
         """
         config = copy.deepcopy(self)
-        if config_file:
-            config.merge(self._load_config_file(config_file))
+        overrides = self._load_config_file(config_file) if config_file else {}
         if patch:
-            config.merge(patch)
+            self._recursively_update(overrides, patch)
+        credentials = overrides.get("storage", {}).get("credentials", {})
+        auth_keys = {"aws_config_file", "access_key_id", "secret_access_key"}
+        storage = self["storage"]
+        parent = None
+        if auth_keys.intersection(credentials):
+            config["storage"]["credentials"].update(dict.fromkeys(auth_keys))
+            config["storage"].pop("_aws_config", None)
+        elif storage["credentials"].get("aws_config_file"):
+            parent = (
+                storage
+                if storage.get("_aws_config")
+                else self._aws_config_source or storage
+            )
+        config._aws_config_source = parent  # pylint: disable=protected-access
+        config.merge(overrides)
         return config
+
+    @property
+    def inherited_aws_config(self) -> dict | None:
+        """Get the parent's startup snapshot when storage credentials were inherited."""
+        return self._aws_config_source and self._aws_config_source.get("_aws_config")
 
     def _read_config(self, file_name):
         custom_config = self._load_config_file(file_name)
