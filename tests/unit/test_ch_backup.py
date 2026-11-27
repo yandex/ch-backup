@@ -1166,7 +1166,7 @@ def test_restore_cloud_storage_location(cli_options: dict, expected: dict) -> No
     context = MagicMock()
     context.config = {"force_non_replicated": False}
     context.backup_layout.get_backup.return_value = meta
-    backup = ClickhouseBackup.__new__(ClickhouseBackup)
+    backup = ClickhouseBackup(DEFAULT_CONFIG)  # type: ignore[arg-type]
     backup.__dict__["_context"] = context
     backup._check_zookeeper_for_restore = Mock()  # type: ignore[method-assign]
     backup._restore = Mock()  # type: ignore[method-assign]
@@ -1205,7 +1205,7 @@ def test_restore_keeps_stored_endpoint_scheme(
     context = MagicMock()
     context.config = {"force_non_replicated": False}
     context.backup_layout.get_backup.return_value = meta
-    backup = ClickhouseBackup.__new__(ClickhouseBackup)
+    backup = ClickhouseBackup(DEFAULT_CONFIG)  # type: ignore[arg-type]
     backup.__dict__["_context"] = context
     with (
         patch.object(backup, "_check_zookeeper_for_restore"),

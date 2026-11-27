@@ -77,6 +77,7 @@ def test_shared_s3_client_reset_and_config_isolation(
 ) -> None:
     monkeypatch.setattr(s3_client_factory, "_FACTORIES", [])
     config = copy.deepcopy(DEFAULT_CONFIG["storage"])
+    config["credentials"].update(access_key_id="key", secret_access_key="secret")
     config["client_ttl"] = 1
     config["retry_max_interval"] = 0
     now = Mock(return_value=0.0)

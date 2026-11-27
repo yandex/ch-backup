@@ -374,6 +374,17 @@ class BackupCopier:
             logging.info(
                 "Copy target deduplication window lower bound: {}", cutoff.isoformat()
             )
+        credentials = [
+            storage["credentials"]
+            for storage in (self._storage, self._target_storage)
+            if storage["type"] == "s3"
+        ]
+        if any(c.get("aws_config_file") for c in credentials) and not all(
+            c.get("endpoint_url") for c in credentials
+        ):
+            raise ConfigurationError(
+                "Copy with aws_config_file requires explicit S3 endpoints for source and target"
+            )
         if storage_id(self._storage) == storage_id(self._target_storage) and _key(
             self._config["backup"]["path_root"]
         ).rstrip("/") == _key(self._target_config["backup"]["path_root"]).rstrip("/"):
@@ -1623,23 +1634,19 @@ class BackupCopier:
             )
 
         credentials = self._target_storage["credentials"]
+        endpoint_url = conf.get("endpoint_url") or credentials["endpoint_url"]
+        aws_config_file = credentials.get("aws_config_file")
         if conf.get("access_key_id"):
-            access_key_id, secret_access_key = (
-                conf["access_key_id"],
-                conf.get("secret_access_key"),
-            )
-        else:
-            access_key_id, secret_access_key = (
-                credentials["access_key_id"],
-                credentials["secret_access_key"],
-            )
+            credentials = conf
+            aws_config_file = None
 
         storage = make_storage_config(
             self._target_storage,
-            endpoint_url=conf.get("endpoint_url") or credentials["endpoint_url"],
+            endpoint_url=endpoint_url,
             bucket=conf["bucket"],
-            access_key_id=access_key_id,
-            secret_access_key=secret_access_key,
+            access_key_id=credentials.get("access_key_id"),
+            secret_access_key=credentials.get("secret_access_key"),
+            aws_config_file=aws_config_file,
         )
         return storage, _key(conf.get("path") or "").rstrip("/")
 
@@ -1691,10 +1698,14 @@ class BackupCopier:
         endpoint_url = conf.get("endpoint_url") or endpoint_url
         bucket = conf.get("bucket") or bucket
 
+        aws_config_file = None
         if conf.get("access_key_id"):
             credentials = (conf["access_key_id"], conf.get("secret_access_key"))
         else:
-            credentials = self._get_disk_credentials(disk_name) or (
+            disk_keys = self._get_disk_credentials(disk_name)
+            if disk_keys is None:
+                aws_config_file = self._storage["credentials"].get("aws_config_file")
+            credentials = disk_keys or (
                 self._storage["credentials"]["access_key_id"],
                 self._storage["credentials"]["secret_access_key"],
             )
@@ -1705,6 +1716,7 @@ class BackupCopier:
             bucket=bucket,
             access_key_id=credentials[0],
             secret_access_key=credentials[1],
+            aws_config_file=aws_config_file,
         )
         return (
             storage,
@@ -2153,10 +2165,16 @@ def _storage_cache_key(storage: dict) -> tuple:
         storage_id(storage),
         credentials.get("access_key_id"),
         credentials.get("secret_access_key"),
+        credentials.get("aws_config_file") or None,
         json.dumps(
             {
                 name: storage.get(name, {})
-                for name in ("boto_config", "module_config", "proxy_resolver")
+                for name in (
+                    "boto_config",
+                    "module_config",
+                    "proxy_resolver",
+                    "_aws_config",
+                )
             },
             sort_keys=True,
         ),
