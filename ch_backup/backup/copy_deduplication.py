@@ -1,6 +1,7 @@
 """Target-local part ownership for an independent backup-copy window."""
 
 from collections import defaultdict, deque
+from collections.abc import Callable
 from concurrent.futures import Future
 from datetime import datetime, timedelta
 from hashlib import blake2b
@@ -93,9 +94,15 @@ class CopyDeduplication:
     """Index verified physical local parts without keeping full metadata in the index."""
 
     def __init__(
-        self, layout: BackupLayout, cutoff: datetime, command_start: datetime
+        self,
+        layout: BackupLayout,
+        cutoff: datetime,
+        command_start: datetime,
+        *,
+        index_cloud_parts: Callable[[BackupMetadata], None] | None = None,
     ) -> None:
         self._layout = layout
+        self._index_cloud_parts = index_cloud_parts
         self.cutoff = cutoff
         self.command_start = command_start
         self._parts: dict[tuple, list[_StoredPart]] = defaultdict(list)
@@ -153,12 +160,23 @@ class CopyDeduplication:
             return
         # Storage/executor errors in the shared inventory operation stay fatal.
         self._index_parts(backup, parts, published=False)
+        if self._index_cloud_parts:
+            try:
+                self._index_cloud_parts(backup)
+            except Exception as exc:
+                if is_broken_executor(exc):
+                    raise
+                logging.warning(
+                    "Cannot use cloud parts from target backup {}: {}", name, exc
+                )
 
     def add_backup(self, backup: BackupMetadata, *, published: bool = False) -> None:
         """Add owners whose backup or files scope has been published successfully."""
         if not self.eligible(backup):
             return
         self._index_parts(backup, _local_parts(backup), published=published)
+        if self._index_cloud_parts:
+            self._index_cloud_parts(backup)
 
     def _index_parts(
         self, backup: BackupMetadata, tables: PartsByTable, *, published: bool

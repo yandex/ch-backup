@@ -1113,7 +1113,7 @@ def delete_command(
         "--resume/--no-resume",
         default=None,
         help="Skip objects confirmed by previous runs of copying and still present in the target "
-        "storage. Enabled by default. With --no-resume, all objects are copied again.",
+        "storage. Enabled by default. With --no-resume, copy selected scopes of unfinished backups again.",
     ),
 )
 @option_group(

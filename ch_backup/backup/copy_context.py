@@ -8,9 +8,11 @@ import json
 import os
 import time
 import uuid
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from types import TracebackType
+from typing import Any, TypedDict
 
 from ch_backup import logging
 from ch_backup.backup.copy_index import CopyEntries
@@ -25,6 +27,15 @@ COPY_CONTEXT_DIR = "copy_context"
 FAILED_OBJECTS_DIR = "failed"
 MANIFEST_DIR = "manifest"
 SOURCE_DIR = "source"
+
+
+class SourceOwner(TypedDict):
+    """Owner information absent from the child; part addresses stay in child metadata."""
+
+    cloud_storage: dict[str, Any]
+    tables: list[tuple[str, str, str | None]]
+    fingerprints: list[tuple[str, str, str, str]]
+    data_paths: dict[str, str]
 
 
 class FailedObjects:
@@ -139,7 +150,9 @@ class CopyContext:
         position = 0
         while batch := paths.read_batch(after=position, limit=128):
             for position, path, _ in batch:
-                if os.path.dirname(path) != self._path:
+                if os.path.dirname(path) != self._path or not path.endswith(
+                    ".jsonl.gz"
+                ):
                     continue
                 try:
                     with TemporaryDirectory() as directory:
@@ -198,40 +211,35 @@ class CopyContext:
         except Exception as e:
             logging.warning("Failed to save list of failed objects {}: {}", path, e)
 
+    def save_source_owners(self, owners: dict[str, SourceOwner]) -> None:
+        """Save dependency information before publishing completion of the files scope."""
+        self._engine.upload_data(
+            json.dumps(owners).encode(),
+            os.path.join(self._path, SOURCE_DIR, "owners.json"),
+        )
+
+    def load_source_owners(self) -> dict[str, SourceOwner]:
+        """Load staged dependencies; missing records require another files-scope run."""
+        return json.loads(
+            self._engine.download_data(
+                os.path.join(self._path, SOURCE_DIR, "owners.json")
+            )
+        )
+
     def save_manifest(self, scope: CopyScope, entries: CopyEntries) -> None:
         """Stream the object manifest without credentials into a compressed file."""
+        path = os.path.join(self._path, MANIFEST_DIR, f"{scope.value}.jsonl.gz")
         with NamedTemporaryFile() as target:
-            with gzip.open(target.name, "wb") as stream:
-                continuation = None
-                while True:
-                    batch, continuation = entries.read_batch(continuation, limit=128)
-                    for entry in batch:
-                        stream.write(_record(entry) + b"\n")
-                    if continuation is None:
-                        break
-            self._engine.upload_file(
-                target.name,
-                os.path.join(self._path, MANIFEST_DIR, f"{scope.value}.jsonl.gz"),
-            )
+            write_copy_manifest(target.name, entries)
+            self._engine.upload_file(target.name, path)
 
     def load_manifest(self, scope: CopyScope) -> CopyEntries:
         """Import the saved manifest without keeping all locations in memory."""
-        entries = CopyEntries()
-        storages: dict[tuple, dict] = {}
+        path = os.path.join(self._path, MANIFEST_DIR, f"{scope.value}.jsonl.gz")
         with TemporaryDirectory() as directory:
-            source = Path(directory) / "manifest.gz"
-            self._engine.download_file(
-                os.path.join(self._path, MANIFEST_DIR, f"{scope.value}.jsonl.gz"),
-                str(source),
-            )
-            with gzip.open(source, "rb") as stream:
-                for line in _journal_lines(stream):
-                    src, src_path, dst, dst_path, size = json.loads(line)
-                    src, dst = (
-                        storages.setdefault(tuple(i), _storage(i)) for i in (src, dst)
-                    )
-                    entries.append(CopyEntry(src, dst, src_path, dst_path, size, size))
-        return entries
+            source = os.path.join(directory, "manifest.gz")
+            self._engine.download_file(path, source)
+            return CopyEntries(read_copy_manifest(source))
 
     def flush(self, force: bool = False) -> None:
         """
@@ -265,6 +273,23 @@ class CopyContext:
             self._flushed_size = 0
             if not force:
                 return
+
+
+def write_copy_manifest(path: str, entries: Iterable[CopyEntry]) -> None:
+    """Write credential-free transfer records in CopyContext manifest format."""
+    with gzip.open(path, "wb") as stream:
+        for entry in entries:
+            stream.write(_record(entry) + b"\n")
+
+
+def read_copy_manifest(path: str) -> Iterator[CopyEntry]:
+    """Stream transfer records, sharing storage descriptors between entries."""
+    storages: dict[tuple, dict] = {}
+    with gzip.open(path, "rb") as stream:
+        for line in _journal_lines(stream):
+            src, src_path, dst, dst_path, size = json.loads(line)
+            src, dst = (storages.setdefault(tuple(i), _storage(i)) for i in (src, dst))
+            yield CopyEntry(src, dst, src_path, dst_path, size, size)
 
 
 def _journal_lines(stream):

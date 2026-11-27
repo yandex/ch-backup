@@ -93,6 +93,15 @@ class CopyEntries:
         self._segments: list[EntryIndex | _FilteredEntries] = [self._index]
         self.extend(entries)
 
+    def __iter__(self) -> Iterator[CopyEntry]:
+        """Read the plan in bounded batches."""
+        continuation = None
+        while True:
+            batch, continuation = self.read_batch(continuation, limit=128)
+            yield from batch
+            if continuation is None:
+                return
+
     def append(self, entry: CopyEntry) -> None:
         """Append one plan entry."""
         if self._segments[-1] is not self._index:

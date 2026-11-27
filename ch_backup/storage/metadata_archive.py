@@ -100,14 +100,14 @@ class TemporaryMetadataArchive:
         self._cleanup()
 
     def read_batch(
-        self, continuation: int | None = None
+        self, continuation: int | None = None, *, include_empty: bool = False
     ) -> tuple[list[tuple[str, bytes]], int | None]:
         """Read a bounded batch; None starts reading and marks completion.
 
         Continuations are byte offsets returned by an earlier call. Memory is
         bounded by 1 MiB of tar data plus one file crossing the batch boundary.
         Legacy archives may omit all padding after the final file.
-        Empty members are omitted, as in the legacy metadata parser.
+        Set include_empty to inspect filenames of zero-byte members as well.
         """
         offset = 0 if continuation is None else continuation
         with Path(self._path).open("rb") as stream:
@@ -126,7 +126,7 @@ class TemporaryMetadataArchive:
                         if member is None:
                             raise ValueError("Truncated TAR stream")
                         data = _read_member(stream, member)
-                        if data:
+                        if data or include_empty:
                             files.append((member.name, data))
                         position = stream.tell()
                         if position - offset >= METADATA_ARCHIVE_BATCH_BYTES:

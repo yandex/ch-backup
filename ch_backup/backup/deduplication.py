@@ -442,10 +442,11 @@ def collect_dedup_references_for_batch_backup_deletion(
         _create_empty_dedup_references
     )
 
-    for backup in retained_backups_light_meta:
+    for light_metadata in retained_backups_light_meta:
+        backup = layout.reload_backup(light_metadata, use_light_meta=False)
         if backup.name in deleting_backup_names:
             raise StorageError("Deleting backup cannot be retained")
-        backup = layout.reload_backup(backup, use_light_meta=False)
+        referenced_parts: dict[str, int] = defaultdict(int)
         for table in backup.get_tables():
             for part in table.get_parts():
                 if not part.link:
@@ -456,8 +457,18 @@ def collect_dedup_references_for_batch_backup_deletion(
                     continue
 
                 _add_part_to_dedup_references(dedup_references[owner_backup_name], part)
+                referenced_parts[owner_backup_name] += 1
                 if referenced_by is not None:
                     referenced_by.setdefault(owner_backup_name, set()).add(backup.name)
+        for owner_name, part_count in sorted(referenced_parts.items()):
+            logging.info(
+                "Retaining referenced parts: owner={}, dependent={}, parts={}",
+                owner_name,
+                backup.name,
+                part_count,
+            )
+
+        del backup
 
     return dedup_references
 

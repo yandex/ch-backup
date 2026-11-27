@@ -147,7 +147,7 @@ def exception(msg, *args, **kwargs):
     """
 
     with_exception = kwargs.get("exc_info", True)
-    getLogger("ch-backup").opt(exception=with_exception).debug(msg, *args, **kwargs)
+    getLogger("ch-backup").opt(exception=with_exception).error(msg, *args, **kwargs)
 
 
 def warning(msg, *args, **kwargs):

@@ -1,6 +1,9 @@
 """Restore staging for encrypted object storage data."""
 
+import hashlib
+import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Sequence
 
@@ -15,6 +18,7 @@ from ch_backup.clickhouse.object_storage_metadata import (
     replace_object_keys,
 )
 from ch_backup.config import Config
+from ch_backup.encryption import validate_cloud_storage_data_encryption_config
 from ch_backup.exceptions import (
     ClickhouseBackupError,
     ConfigurationError,
@@ -35,6 +39,94 @@ from ch_backup.storage.object_copy import (
 DEFAULT_DECRYPTED_SUFFIX = "_decrypted"
 
 
+@dataclass(frozen=True)
+class DecryptionLocation:
+    """Source and staging locations checked together before any staging cleanup."""
+
+    source_storage: dict
+    source_path: str
+    staging_storage: dict
+    staging_path: str
+
+
+# pylint: disable=too-many-locals
+def resolve_restore_decryption_locations(
+    config: Config | dict,
+    layout: BackupLayout,
+    requested_backup: BackupMetadata,
+    disks: Sequence[tuple[BackupMetadata | CloudStorageBackup, str, dict, dict]],
+) -> dict[tuple[str, str], DecryptionLocation]:
+    """Resolve all owners before staging cleanup can affect another owner's source."""
+    locations = {}
+    for owner, disk_name, source_disk, destination_disk in disks:
+        logging.info(
+            "Preparing cloud restore: backup={}, owner={}, disk={}",
+            requested_backup.name,
+            owner.name,
+            disk_name,
+        )
+        encryption = owner.cloud_storage.data_encryption
+        if encryption != requested_backup.cloud_storage.data_encryption:
+            raise ConfigurationError(
+                "Cloud owner and child encryption metadata differ: "
+                f"backup={requested_backup.name}, owner={owner.name}, disk={disk_name}"
+            )
+        if encryption is None:
+            continue
+        validate_cloud_storage_data_encryption_config(config, encryption)
+        if owner.cloud_storage.data_copied:
+            source_storage = config["storage"]
+            source_path = layout.get_cloud_storage_data_path(owner.name, disk_name)
+        else:
+            source = get_s3_disk_location(source_disk)
+            if source is None:
+                raise ConfigurationError(
+                    f'Cannot determine encrypted source of disk "{disk_name}"'
+                )
+            endpoint, bucket, source_path = source
+            source_storage = make_storage_config(
+                config["storage"],
+                endpoint,
+                bucket,
+                source_disk.get("access_key_id"),
+                source_disk.get("secret_access_key"),
+            )
+        staging_storage, staging_path = resolve_decryption_staging(
+            config,
+            source_storage,
+            source_path,
+            destination_disk,
+            owner_name=owner.name,
+            disk_name=disk_name,
+        )
+        locations[owner.name, disk_name] = DecryptionLocation(
+            source_storage,
+            _normalize_prefix(source_path),
+            staging_storage,
+            staging_path,
+        )
+
+    for location in locations.values():
+        for other in locations.values():
+            if same_storage(
+                location.staging_storage, other.source_storage
+            ) and prefixes_overlap(location.staging_path, other.source_path):
+                raise ConfigurationError(
+                    "Decryption staging overlaps a cloud owner's encrypted source"
+                )
+            # Owner/disk subdirectories separate a shared root. Independently
+            # selected roots must not place one allocation inside another.
+            if (
+                location is not other
+                and same_storage(location.staging_storage, other.staging_storage)
+                and prefixes_overlap(location.staging_path, other.staging_path)
+            ):
+                raise ConfigurationError(
+                    "Cloud owners have overlapping decryption staging paths"
+                )
+    return locations
+
+
 class CloudStorageDecryption:
     """Decrypt copied object storage data into restore staging."""
 
@@ -49,15 +141,25 @@ class CloudStorageDecryption:
         backup: BackupMetadata | CloudStorageBackup,
         disk_name: str,
         desired_tables: Sequence[TableMetadata] | Literal["all"],
-        source_storage: dict,
-        source_path: str,
-        staging_storage: dict,
-        staging_path: str,
+        location: DecryptionLocation,
         keep_going: bool = False,
     ) -> None:
         """Decrypt objects referenced by disk metadata into staging."""
-        source_path = _normalize_prefix(source_path)
-        staging_path = _normalize_prefix(staging_path)
+        source_storage, source_path = location.source_storage, location.source_path
+        staging_storage, staging_path = location.staging_storage, location.staging_path
+        logging.info(
+            "Cloud decryption staging: owner={}, disk={}, source_bucket={}, source_prefix={}, "
+            "staging_bucket={}, staging_prefix={}",
+            backup.name,
+            disk_name,
+            source_storage["credentials"]["bucket"],
+            source_path,
+            staging_storage["credentials"]["bucket"],
+            staging_path,
+        )
+        remote_paths = self._layout.list_restore_metadata_archives(
+            backup, disk_name, desired_tables
+        )
         staging = self._staging_prefixes.setdefault(
             storage_id(staging_storage), (staging_storage, set())
         )
@@ -66,12 +168,6 @@ class CloudStorageDecryption:
             staging[1].add(staging_path)
 
         entries: dict[str, CopyEntry] = {}
-        remote_paths = self._layout.list_cloud_storage_metadata_archives(
-            backup.get_sanitized_name(),
-            disk_name,
-            backup.cloud_storage.compressed,
-            desired_tables,
-        )
         for remote_path in remote_paths:
             for file_name, data in self._layout.read_cloud_storage_metadata_archive(
                 backup, remote_path
@@ -247,13 +343,17 @@ class CloudStorageDecryption:
                 ) from e
 
 
+# pylint: disable=too-many-locals
 def resolve_decryption_staging(
     config: Config | dict,
     source_storage: dict,
     source_path: str,
     destination_disk: dict,
+    *,
+    owner_name: str,
+    disk_name: str,
 ) -> tuple[dict, str]:
-    """Return storage and key prefix for plaintext cloud storage objects."""
+    """Allocate an owner/disk subdirectory so a shared staging root cannot merge objects."""
     staging_config = config["restore"]["cloud_storage"]["decryption_staging"]
     disk_location = get_s3_disk_location(destination_disk)
     if disk_location is None:
@@ -318,6 +418,12 @@ def resolve_decryption_staging(
 
     if not staging_path:
         raise ConfigurationError("Decryption staging path must not be the bucket root")
+    # A fixed-size component avoids path separators and collisions from sanitizing
+    # owner names. Include the disk because one owner can have several namespaces.
+    allocation = hashlib.sha256(
+        json.dumps([owner_name, disk_name]).encode()
+    ).hexdigest()
+    staging_path = f"{staging_path}/{allocation}"
     if same_storage(source_storage, storage) and prefixes_overlap(
         source_path, staging_path
     ):
