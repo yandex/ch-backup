@@ -574,12 +574,9 @@ def test_keeper_conflict_precedes_local_drops_and_every_cleanup_mode(
         manager.restore(
             context,
             {"db": Database("db", "Atomic", None, None, None)},
-            schema_only=True,
+            disks=None,
             tables=[],
             metadata_cleaner=cleaner,
-            cloud_storage_source_bucket=None,
-            cloud_storage_source_path=None,
-            cloud_storage_source_endpoint=None,
             skip_cloud_storage=True,
             restore_detached_parts=False,
             keep_going=keep_going,
@@ -664,12 +661,9 @@ def test_keep_going_restores_independent_schema_then_reports_error(failure_stage
         manager.restore(
             context,
             {"db": Database("db", "Atomic", None, None, None)},
-            schema_only=True,
+            disks=None,
             tables=[],
             metadata_cleaner=None,
-            cloud_storage_source_bucket=None,
-            cloud_storage_source_path=None,
-            cloud_storage_source_endpoint=None,
             skip_cloud_storage=True,
             restore_detached_parts=False,
             keep_going=True,
@@ -826,12 +820,9 @@ def test_disk_adaptation_never_drops_an_existing_table(keep_going, detached):
         manager.restore(
             context=context,
             databases={"db": Database("db", "Atomic", None, None, None)},
-            schema_only=True,
+            disks=None,
             tables=[],
             metadata_cleaner=None,
-            cloud_storage_source_bucket=None,
-            cloud_storage_source_path=None,
-            cloud_storage_source_endpoint=None,
             skip_cloud_storage=True,
             restore_detached_parts=False,
             keep_going=keep_going,
@@ -892,7 +883,6 @@ def test_prepared_schemas_hold_locks_through_create_but_not_data_loading():
         ),
         patch.object(manager, "_restore_tables", side_effect=create_tables),
         patch.object(manager, "_restore_data", side_effect=restore_data),
-        patch("ch_backup.logic.table.ClickHouseTemporaryDisks"),
     ):
         prepared = manager.prepare_restore(
             context, databases, [], False, True, False, stack
@@ -901,12 +891,9 @@ def test_prepared_schemas_hold_locks_through_create_but_not_data_loading():
         manager.restore(
             context=context,
             databases=databases,
-            schema_only=False,
+            disks=MagicMock(),
             tables=[],
             metadata_cleaner=None,
-            cloud_storage_source_bucket=None,
-            cloud_storage_source_path=None,
-            cloud_storage_source_endpoint=None,
             skip_cloud_storage=True,
             restore_detached_parts=False,
             keep_going=False,

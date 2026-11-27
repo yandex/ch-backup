@@ -5,6 +5,7 @@
 
 import pytest
 
+from ch_backup.backup.metadata import CopyScope, CopyScopeStatus
 from ch_backup.ch_backup import _CloudCleanupPlan
 from ch_backup.exceptions import ConfigurationError
 
@@ -70,7 +71,7 @@ def test_invalid_cleanup_destination_cannot_create_storage_client(
 @pytest.mark.parametrize(
     "prefix,configured_endpoint,accepted",
     [
-        ("ch_backup/backup1", "https://s3.amazonaws.com", True),
+        ("ch_backup/backup1", "https://s3.amazonaws.com", False),
         ("ch_backup/backup1/nested/backup1", "https://s3.amazonaws.com", False),
         ("ch_backup/backup1/nested/backup1", None, False),
         ("copies//backup1", "https://s3.amazonaws.com", True),
@@ -80,10 +81,7 @@ def test_cleanup_overlap_and_s3_key_boundaries(
     cleanup, prefix, configured_endpoint, accepted
 ):
     """
-    Metadata removal could erase payload in a nested backup directory. Exact
-    co-location is supported, and repeated slashes are literal S3 key
-    characters; blanket overlap rejection or path normalization would break
-    those layouts.
+    Metadata removal could erase payload in a nested backup directory. Equal prefixes also overlap. Repeated slashes are literal S3 key characters.
     """
     c = cleanup
     c.config["storage"]["credentials"]["endpoint_url"] = configured_endpoint
@@ -146,3 +144,37 @@ def test_disabled_external_cleanup_retains_payload_without_validating_target(
         )
         for record in messages
     )
+
+
+@pytest.mark.parametrize(
+    "scopes",
+    [
+        {CopyScope.CLOUD_STORAGE: CopyScopeStatus.PENDING},
+        {CopyScope.FILES: CopyScopeStatus.COMPLETED},
+    ],
+)
+def test_files_only_copy_with_no_manifest_preserves_source_objects(cleanup, scopes):
+    c = cleanup
+    c.meta.copy_scopes = scopes
+    c.meta.cloud_storage.source["endpoint_url"] = "https://source.example"
+    assert (
+        c.manager._prepare_backup_cloud_cleanup(c.meta, {}, True) == _CloudCleanupPlan()
+    )
+    c.engine_factory.assert_not_called()
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_delete_refuses_existing_shared_directory_before_mutation(cleanup, explicit):
+    c = cleanup
+    c.meta.cloud_storage.source.update(bucket="backups", path="ch_backup/backup1")
+    c.records[c.meta.name] = c.meta.dump_json()
+    c.objects.update({"ch_backup/backup1/part", "ch_backup/backup1/unrelated"})
+    records, objects = c.records.copy(), c.objects.copy()
+    with pytest.raises(ConfigurationError, match="overlaps"):
+        c.manager.delete(
+            c.meta.name, purge_partial=False, delete_cloud_storage_data=explicit
+        )
+    assert c.records == records
+    assert c.objects == objects
+    c.layout.delete_backup.assert_not_called()
+    c.layout.upload_backup_metadata.assert_not_called()

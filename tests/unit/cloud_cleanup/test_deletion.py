@@ -2,6 +2,7 @@
 
 # pylint: disable=protected-access
 
+import json
 from copy import deepcopy
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
@@ -14,11 +15,14 @@ from ch_backup.backup.deduplication import (
 from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
+    CopyScope,
+    CopyScopeStatus,
     PartMetadata,
 )
 from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.exceptions import ConfigurationError, InvalidBackupStruct, StorageError
 from ch_backup.storage.engine.s3 import S3StorageEngine
+from tests.unit.test_backup_copy import _object_storage_metadata
 
 
 def test_mutation_renamed_child_protects_owners_cloud_part(cleanup, make_cloud_backup):
@@ -48,12 +52,10 @@ def test_mutation_renamed_child_protects_owners_cloud_part(cleanup, make_cloud_b
         c.layout, [child], {c.meta.name}
     )
     assert references[c.meta.name] == {"db": {"table": {"all_1_1_0"}}}
-    # Retaining the owner requires no credentials for its external destination.
-    c.meta.cloud_storage.source["endpoint_url"] = "https://unconfigured.test"
-    c.records[c.meta.name] = c.meta.dump_json()
-    _, _, plan = c.manager._prepare_deletion_batch([c.meta], references, True)[0]
+    plan = c.manager._prepare_backup_cloud_cleanup(
+        c.meta, references[c.meta.name], True
+    )
     assert plan.delete_external_payload is None
-    assert plan.delete_backup_cloud_files is None
     c.engine.delete_files.assert_not_called()
     c.loader.upload_file.assert_not_called()
 
@@ -133,7 +135,7 @@ def test_late_cloud_validation_failure_leaves_entire_batch_unchanged(
 ):
     """
     Validating backups only as they are deleted could destroy the first backup
-    before discovering an unsafe later target. Exercise destination rejection
+    before discovering an unsafe later target. Exercise destination rejection,
     and missing archives.
     Both public operations must validate the complete batch before any mutation;
     individual destination rules are covered in test_destinations.py.
@@ -165,11 +167,11 @@ def test_late_cloud_validation_failure_leaves_entire_batch_unchanged(
 
 
 @pytest.mark.parametrize(
-    "operation",
-    ["delete", "purge"],
+    "operation,incomplete_copy",
+    [("delete", False), ("purge", False), ("delete", True)],
 )
 def test_whole_cleanup_reloads_retry_metadata_after_late_batch_failure(
-    cleanup, operation
+    cleanup, messages, operation, incomplete_copy, seed_manifests
 ):
     """
     A later batch can fail after earlier objects are gone. Recreating the
@@ -178,6 +180,28 @@ def test_whole_cleanup_reloads_retry_metadata_after_late_batch_failure(
     """
     c = cleanup
     calls = []
+    if incomplete_copy:
+        c.meta.copy_scopes = {CopyScope.CLOUD_STORAGE: CopyScopeStatus.FAILED}
+        c.meta.state = BackupState.FAILED
+        c.records[c.meta.name] = c.meta.dump_json()
+        c.archives.clear()
+        seed_manifests(
+            c, (c.meta.cloud_storage.source, ["copies/backup1/" + k for k in "abc"])
+        )
+        c.meta.cloud_storage.source = {
+            "endpoint_url": None,
+            "bucket": "source",
+            "path": "original",
+        }
+        c.records[c.meta.name] = c.meta.dump_json()
+    else:
+        # A failed deletion preserves completed copy scopes. Retrying must read
+        # the published archives even when the transfer manifest still exists.
+        c.meta.copy_scopes = dict.fromkeys(CopyScope, CopyScopeStatus.COMPLETED)
+        c.records[c.meta.name] = c.meta.dump_json()
+        c.loader.download_file.side_effect = AssertionError(
+            "Read a stale transfer manifest"
+        )
 
     def delete(keys):
         calls.append(list(keys))
@@ -195,9 +219,16 @@ def test_whole_cleanup_reloads_retry_metadata_after_late_batch_failure(
             c.manager.purge(delete_cloud_storage_data=True)
     failed = BackupMetadata.load_json(c.records["backup1"])
     assert failed.state == BackupState.FAILED
-    assert failed.cloud_storage.source["path"] == "copies/backup1"
+    assert failed.cloud_storage.source["path"] == (
+        "original" if incomplete_copy else "copies/backup1"
+    )
     assert c.objects == {"copies/backup1/c", "copies/backup1/foreign"}
+    output = "\n".join(record["message"] for record in messages)
+    assert "confirmed=2" in output and "planned=3" in output
+    assert "cleanup failed" in output and "cleanup completed" not in output
     c.layout.delete_backup.assert_not_called()
+    if incomplete_copy:
+        assert failed.copy_scopes[CopyScope.CLOUD_STORAGE] == CopyScopeStatus.FAILED
     retry = ClickhouseBackup(c.config)
     retry.__dict__["_context"] = c.context
     assert retry.delete(
@@ -206,6 +237,10 @@ def test_whole_cleanup_reloads_retry_metadata_after_late_batch_failure(
     assert calls == [["copies/backup1/a", "copies/backup1/b"], ["copies/backup1/c"]] * 2
     assert c.objects == {"copies/backup1/foreign"}
     assert not c.records
+    if incomplete_copy:
+        assert [call.args[0] for call in c.loader.download_file.call_args_list] == [
+            "ch_backup/backup1/copy_context/cleanup/0.jsonl.gz"
+        ] * 2
     c.context.ch_ctl.system_unfreeze.assert_not_called()
 
 
@@ -261,70 +296,96 @@ def test_external_cleanup_requires_readable_light_metadata(cleanup, delete_unrea
     c.loader.upload_file.assert_not_called()
 
 
-@pytest.mark.parametrize("original", [False, True])
-def test_partial_cleanup_keeps_cloud_owner_until_final_deletion(cleanup, original):
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_cloud_reference_keeps_all_owner_data_until_final_explicit_cleanup(
+    cleanup,
+    interrupted,
+    seed_manifests,
+):
+    """A retained cloud part keeps earlier attempts and every disk archive through partial deletion."""
     c = cleanup
-    if original:
-        c.meta.copied_from = None
-        c.meta.cloud_storage.source = None
-    for number, disk in enumerate(["s3", "s3", "default", "default"], 1):
+    c.meta.cloud_storage.add_disk("other")
+    for name, disk in (("all_1_1_0", "s3"), ("all_2_2_0", "other")):
         c.meta.add_part(
-            PartMetadata(
-                "db",
-                "table",
-                f"all_{number}_{number}_0",
-                "c",
-                10,
-                [],
-                False,
-                disk_name=disk,
-            )
+            PartMetadata("db", "table", name, "c", 1, [], False, disk_name=disk)
         )
-    c.meta.cloud_storage.add_disk("linked_only")
+    # An older owner can have a disk containing only links and no archive.
+    c.meta.cloud_storage.add_disk("linked")
     c.meta.add_part(
         PartMetadata(
             "db",
             "table",
-            "all_5_5_0",
+            "all_3_3_0",
             "c",
-            10,
+            1,
             [],
             False,
-            disk_name="linked_only",
-            link="other",
+            disk_name="linked",
+            link="source-owner",
         )
     )
-    refs = {"db": {"table": {"all_1_1_0", "all_3_3_0"}}}
+    c.archives["ch_backup/backup1/disks/other/db/table.tar.gz"] = [
+        ("all_2_2_0/data.bin", _object_storage_metadata(("other", 1)))
+    ]
+    c.objects.update({"copies/backup1/other", "old/backup1/attempt"})
+    seed_manifests(
+        c,
+        (
+            dict(c.meta.cloud_storage.source, path="old/backup1"),
+            ["old/backup1/attempt"],
+        ),
+    )
     c.records[c.meta.name] = c.meta.dump_json()
-    original_archives = deepcopy(c.archives)
-    original_objects = set(c.objects)
-    for _ in range(2):
-        loaded, light, plan = c.manager._prepare_deletion_batch(
-            [c.layout.get_backup("backup1")], {"backup1": refs}, True
-        )[0]
-        assert c.manager._execute_backup_deletion(loaded, refs, light, plan)[0] is None
-        assert c.archives == original_archives
-        assert c.objects == original_objects
-        c.layout.download_cloud_storage_metadata_archive.assert_not_called()
-        c.loader.upload_file.assert_not_called()
-        c.context.ch_ctl.system_unfreeze.assert_not_called()
-        result = BackupMetadata.load_json(c.records["backup1"])
-        if not original:
-            assert result.cloud_storage.disks == ["s3"]
-        assert result.state == BackupState.PARTIALLY_DELETED
-        assert [part.name for part in result.get_parts()] == ["all_1_1_0", "all_3_3_0"]
-    loaded, light, plan = c.manager._prepare_deletion_batch(
-        [result], {"backup1": {}}, True
+    before = (deepcopy(c.archives), set(c.objects))
+    refs = {"db": {"table": {"all_1_1_0"}}}
+    backup, light, plan = c.manager._prepare_deletion_batch(
+        [c.meta], {c.meta.name: refs}, True
     )[0]
-    assert c.manager._execute_backup_deletion(loaded, {}, light, plan) == (
-        "backup1",
+    if interrupted:
+        # Local cleanup may fail after the owner's last outgoing link is gone.
+        with patch.object(
+            c.manager, "_delete_detached_parts", side_effect=StorageError("interrupted")
+        ):
+            with pytest.raises(StorageError, match="interrupted"):
+                c.manager._execute_backup_deletion(backup, refs, light, plan)
+    else:
+        assert c.manager._execute_backup_deletion(backup, refs, light, plan)[0] is None
+    assert (c.archives, c.objects) == before
+    c.layout.download_cloud_storage_metadata_archive.assert_not_called()
+    c.engine.delete_files.assert_not_called()
+    c.loader.upload_file.assert_not_called()
+    partial = c.layout.get_backup(c.meta.name)
+    assert set(partial.cloud_storage.disks) == {"s3", "other"}
+    assert [part.name for part in partial.get_parts()] == ["all_1_1_0"]
+    assert c.manager.delete(partial.name, False, delete_cloud_storage_data=True) == (
+        partial.name,
         None,
     )
-    if original:
-        c.context.ch_ctl.system_unfreeze.assert_called_once_with("backup1")
-        assert c.objects == original_objects
-    else:
-        assert c.objects == {"copies/backup1/foreign"}
+    assert c.objects == {"copies/backup1/foreign"}
+
+
+@pytest.mark.parametrize("copied", [False, True])
+def test_referenced_original_keeps_its_frozen_objects_until_final_deletion(
+    cleanup, copied
+):
+    """Only a metadata-only original backup still depends on its frozen source objects."""
+    c = cleanup
+    c.meta.copied_from = None
+    c.meta.cloud_storage.data_copied = copied
+    c.meta.cloud_storage.source = None
+    c.meta.add_part(
+        PartMetadata("db", "table", "all_1_1_0", "c", 1, [], False, disk_name="s3")
+    )
+    c.records[c.meta.name] = c.meta.dump_json()
+    refs = {"db": {"table": {"all_1_1_0"}}}
+    backup, light, plan = c.manager._prepare_deletion_batch(
+        [c.meta], {c.meta.name: refs}, True
+    )[0]
+    c.manager._execute_backup_deletion(backup, refs, light, plan)
+    assert c.context.ch_ctl.system_unfreeze.call_count == int(copied)
+    c.context.ch_ctl.system_unfreeze.reset_mock()
+    c.manager.delete(c.meta.name, False)
+    c.context.ch_ctl.system_unfreeze.assert_called_once_with(c.meta.name)
 
 
 def test_s3_per_key_error_keeps_cleanup_metadata_for_retry(cleanup):
@@ -356,3 +417,56 @@ def test_s3_per_key_error_keeps_cleanup_metadata_for_retry(cleanup):
         {"Key": "copies/backup1/a"},
         {"Key": "copies/backup1/b"},
     ]
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        None,
+        {},
+        1,
+        "elsewhere/a",
+        "copies/backup1/../a",
+        "copies/backup1/./a",
+        "unreadable",
+    ],
+)
+def test_incomplete_copy_rejects_unsafe_or_unreadable_manifest(
+    cleanup, manifest, seed_manifests
+):
+    """Validate the destination and every planned key before deleting any object."""
+    c = cleanup
+    c.meta.copy_scopes = {CopyScope.CLOUD_STORAGE: CopyScopeStatus.FAILED}
+    c.meta.state = BackupState.FAILED
+    seed_manifests(c, (c.meta.cloud_storage.source, [manifest]))
+    if manifest == "unreadable":
+        c.loader.download_file.side_effect = StorageError("missing manifest")
+    with pytest.raises((ConfigurationError, StorageError)):
+        c.manager._prepare_backup_cloud_cleanup(c.meta, {}, True)
+    c.engine.delete_files.assert_not_called()
+    c.layout.upload_backup_metadata.assert_not_called()
+
+
+def test_purge_completed_copy_reclaims_keys_from_earlier_destination(
+    cleanup, seed_manifests
+):
+    c = cleanup
+    old = dict(c.meta.cloud_storage.source, path="old/backup1")
+    seed_manifests(
+        c, (old, ["old/backup1/x"]), (c.meta.cloud_storage.source, ["copies/backup1/a"])
+    )
+    c.objects.update({"old/backup1/x", "old/backup1/foreign"})
+    c.manager.purge(delete_cloud_storage_data=True)
+    assert c.objects == {"copies/backup1/foreign", "old/backup1/foreign"}
+    assert not c.records
+
+
+def test_cleanup_rejects_manifest_from_another_bucket(cleanup, seed_manifests):
+    c = cleanup
+    location = c.meta.cloud_storage.source
+    seed_manifests(c, (location, ["copies/backup1/a"]))
+    c.loader.download_data.return_value = json.dumps([dict(location, bucket="another")])
+    with pytest.raises(ConfigurationError, match="outside the copy destination"):
+        c.manager.delete("backup1", purge_partial=False, delete_cloud_storage_data=True)
+    c.engine.delete_files.assert_not_called()
+    c.layout.delete_backup.assert_not_called()

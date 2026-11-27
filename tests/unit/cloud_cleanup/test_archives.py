@@ -1,4 +1,4 @@
-"""Archive boundaries and object selection for whole-owner cleanup."""
+"""Cloud archive boundaries, part selection, and shared-object protection."""
 
 # pylint: disable=protected-access
 
@@ -76,17 +76,22 @@ def test_cleanup_selects_recorded_keys_and_skips_link_only_disks(cloud_layout, v
     c.engine.delete_files.assert_not_called()
 
 
-def test_final_cleanup_scans_existing_archives_on_link_only_disks(cloud_layout):
-    """A partial owner can retain archives after its unreferenced part records disappear."""
+def test_cleanup_reads_disk_wide_and_per_table_archives_on_a_now_link_only_disk(
+    cloud_layout,
+):
+    """The last owned part can disappear from metadata while both archives remain."""
     c = cloud_layout
-    c.meta.get_table("db", "table").add_part(
+    c.meta.add_part(
         PartMetadata(
             "db", "table", "all_2_2_0", "c", 1, [], False, disk_name="s3", link="other"
         )
     )
+    c.archives["ch_backup/backup1/disks/s3.tar.gz"] = [
+        ("all_1_1_0/data.bin", _object_storage_metadata(("legacy", 1)))
+    ]
     assert list(
         c.layout.collect_cloud_object_keys_for_deletion(c.meta, "copies/backup1")
-    ) == ["copies/backup1/a", "copies/backup1/b", "copies/backup1/c"]
+    ) == ["copies/backup1/" + key for key in ("a", "b", "c", "legacy")]
 
 
 def test_cleanup_rejects_object_keys_outside_payload_prefix(cloud_layout):

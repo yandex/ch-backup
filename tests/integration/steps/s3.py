@@ -265,6 +265,13 @@ def step_save_s3_prefix_keys(context, bucket, prefix):
     context.s3_prefix_keys = (bucket, prefix, keys)
 
 
+@then("the saved S3 prefix contains the same keys")
+def step_saved_s3_prefix_matches(context):
+    """Compare all current object keys with the snapshot taken before deletion."""
+    bucket, prefix, saved = context.s3_prefix_keys
+    assert set(s3.S3Client(context, bucket).list_objects(prefix)) == saved
+
+
 @then("saved S3 objects are {state:w}")
 def step_saved_s3_objects(context, state):
     bucket, prefix, saved = context.s3_prefix_keys

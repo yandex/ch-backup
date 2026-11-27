@@ -379,6 +379,8 @@ def _mock_backup_reads_with_broken_target(context, *readable_backups):
             None,
         )
 
+    context.backup_layout.get_cloud_storage_backup.return_value = None
+    context.backup_layout.read_cloud_copy_manifest.return_value = []
     context.backup_layout.get_backups.side_effect = list_readable_backups
     context.backup_layout.get_backup.side_effect = read_backup_metadata
 
@@ -506,13 +508,9 @@ def test_restore_reports_failed_zookeeper_check(error: Exception) -> None:
 
 
 def _mock_backup_metadata(name: str, **attributes: object) -> Mock:
-    """Unset mock attributes are truthy; ordinary backups have no generation links."""
-    meta = Mock(
-        state=BackupState.CREATED,
-        generation_of=None,
-        cloud_generation=None,
-        **attributes,
-    )
+    """Build a minimal named backup for deletion tests."""
+    attributes.setdefault("copy_scopes", {})
+    meta = Mock(state=BackupState.CREATED, **attributes)
     meta.name = name
     return meta
 

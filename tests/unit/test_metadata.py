@@ -828,6 +828,43 @@ class TestCopiedBackupMetadata:
             "cloud_storage": extra.get("cloud_storage", {"disks": []}),
         }
 
+    @pytest.mark.parametrize(
+        "fields,fingerprint",
+        [({}, None), ({"cloud_storage_fingerprint": "v1:original"}, "v1:original")],
+    )
+    def test_cloud_fingerprint_survives_part_copy_and_explicit_update(
+        self, fields: dict[str, str], fingerprint: str | None
+    ) -> None:
+        """Rebuilding a table must preserve reuse identity, including its absence in old backups.
+
+        Fingerprint updates must reach serialized metadata, not only a decoded
+        part object that later reads would discard.
+        """
+        metadata = self._metadata()
+        metadata["databases"]["db1"]["tables"]["t1"]["parts"]["all_2_2_0"].update(
+            fields
+        )
+        source = BackupMetadata.load(metadata)
+        copied_table = TableMetadata("db1", "t1", "MergeTree", None)
+        for part in source.get_parts():
+            copied_table.add_part(part)
+        copied_part = copied_table.raw_metadata["parts"]["all_2_2_0"]
+        assert copied_part.get("cloud_storage_fingerprint") == fingerprint
+        assert ("cloud_storage_fingerprint" in copied_part) == (fingerprint is not None)
+
+        metadata["databases"]["db1"]["tables"]["t1"] = copied_table.raw_metadata
+        copied = BackupMetadata.load_json(json.dumps(metadata))
+        part = copied.find_part("db1", "t1", "all_2_2_0")
+        assert part is not None
+        assert part.cloud_storage_fingerprint == fingerprint
+
+        copied.set_cloud_storage_fingerprint(part, "v1:updated")
+        reloaded = BackupMetadata.load_json(copied.dump_json())
+        updated = reloaded.find_part(*part.logical_identity)
+        assert updated is not None
+        assert updated.cloud_storage_fingerprint == "v1:updated"
+        assert part.cloud_storage_fingerprint == fingerprint
+
     def test_regular_backup_has_no_copy_fields(self) -> None:
         backup = BackupMetadata.load(self._metadata())
 

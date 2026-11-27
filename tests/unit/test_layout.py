@@ -24,6 +24,7 @@ from ch_backup.backup.metadata import (
     CopyScopeStatus,
     PartMetadata,
 )
+from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageBackup
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.cli import delete_command
@@ -349,6 +350,31 @@ class TestCloudStorageMetadataRemotePaths:
     """Tests for filtered cloud metadata remote path selection."""
 
     # pylint: disable=protected-access
+
+    @pytest.mark.parametrize("descriptor_only", [False, True])
+    def test_restore_refuses_mixed_archives_before_extracting(self, descriptor_only):
+        layout = make_layout()
+        backup = BackupMetadata("backup", "2", "26.6", "%Y-%m-%d %H:%M:%S %z")
+        backup.cloud_storage.source = {
+            "endpoint_url": None,
+            "bucket": "copies",
+            "path": "backup",
+        }
+        owner: BackupMetadata | CloudStorageBackup = (
+            CloudStorageBackup(backup.name, backup.cloud_storage)
+            if descriptor_only
+            else backup
+        )
+        storage = MagicMock()
+        setattr(layout, "_storage_loader", storage)
+        storage.path_exists.return_value = True
+        storage.list_dir.return_value = [
+            f"ch_backup/{backup.name}/disks/s3/db/table.tar"
+        ]
+
+        with pytest.raises(StorageError, match="disk-wide and per-table"):
+            layout.download_cloud_storage_metadata(owner, MagicMock(), "s3", "all")
+        storage.download_files.assert_not_called()
 
     def test_prefers_old_style_and_filters_exact_per_table_paths(self):
         layout = make_layout()
@@ -792,6 +818,7 @@ def fallback_context_fixture():
         )
     )
     backup = ClickhouseBackup.__new__(ClickhouseBackup)
+    backup.__dict__["_config"] = copy.deepcopy(DEFAULT_CONFIG)
     context = MagicMock(backup_layout=layout)
     context.config = {"retain_count": 1, "retain_time": {}}
     backup.__dict__["_context"] = context

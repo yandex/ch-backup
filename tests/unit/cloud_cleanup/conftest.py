@@ -2,6 +2,8 @@
 
 # pylint: disable=protected-access
 
+import json
+import shutil
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import cast
@@ -9,7 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from ch_backup import logging
+from ch_backup.backup.copy_context import write_copy_manifest
 from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
@@ -19,6 +21,7 @@ from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.clickhouse.models import Database
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.storage.metadata_archive import spool_metadata
+from ch_backup.storage.object_copy import CopyEntry
 from tests.unit.test_backup_copy import _object_storage_metadata
 from tests.unit.test_ch_backup import _backup_metadata
 from tests.unit.test_layout import make_layout
@@ -128,13 +131,27 @@ def fixture_cleanup(monkeypatch, cloud_layout):
     return c
 
 
-@pytest.fixture(name="messages")
-def info_messages():
-    records = []
-    sink = logging.logger.add(
-        lambda message: records.append(message.record), level="INFO"
-    )
-    try:
-        yield records
-    finally:
-        logging.logger.remove(sink)
+@pytest.fixture
+def seed_manifests(tmp_path):
+    """Install standard transfer manifests and their destination list in the fixture."""
+
+    def seed(c, *groups):
+        root = "ch_backup/backup1/copy_context/cleanup"
+        files = {}
+        for index, (location, keys) in enumerate(groups):
+            path = tmp_path / f"{index}.jsonl.gz"
+            storage = {"type": "s3", "credentials": location}
+            write_copy_manifest(
+                str(path),
+                (CopyEntry(storage, storage, "source", key, 1, 1) for key in keys),
+            )
+            files[f"{root}/{path.name}"] = path
+        c.loader.path_exists.side_effect = (
+            lambda key: key == f"{root}/locations.json" or key in c.archives
+        )
+        c.loader.download_data.return_value = json.dumps([loc for loc, _ in groups])
+        c.loader.download_file.side_effect = lambda remote, local, **_: shutil.copyfile(
+            files[remote], local
+        )
+
+    return seed

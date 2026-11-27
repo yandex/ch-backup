@@ -15,7 +15,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ch_backup import logging
-from ch_backup.backup.cloud_storage_decryption import CloudStorageDecryption
+from ch_backup.backup.cloud_storage_decryption import (
+    CloudStorageDecryption,
+    DecryptionLocation,
+)
 from ch_backup.backup.layout import (
     MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE,
     BackupLayout,
@@ -351,7 +354,10 @@ def test_restore_decryption_planning_skips_empty_metadata_members() -> None:
     ):
         decryption = CloudStorageDecryption(DEFAULT_CONFIG, layout)
         decryption.decrypt(
-            make_backup(), "s3", "all", storage, "data", storage, "staging"
+            make_backup(),
+            "s3",
+            "all",
+            DecryptionLocation(storage, "data", storage, "staging"),
         )
     entries, disk_name, keep_going = decrypt.call_args.args
     assert disk_name == "s3" and not keep_going

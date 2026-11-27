@@ -153,3 +153,44 @@ def step_pending_backup_references(context, node, backup_name, dependent):
     assert marker is not None
     assert marker["state"] == "partially_deleted"
     assert marker["referenced_by"] == [dependent]
+
+
+@given(
+    'native cloud backups "{names}" from {source_node:w} are legacy copies on {target_node:w}'
+)
+def step_seed_legacy_cloud_copies(context, names, source_node, target_node):
+    source = BackupStorage(context, source_node)
+    target = BackupStorage(context, target_node)
+    assert (
+        source.config["storage"]["credentials"]["bucket"]
+        != target.config["storage"]["credentials"]["bucket"]
+    )
+    context.legacy_cloud_objects = {}
+    for name in names.split(","):
+        backup = source.layout.get_backup(name)
+        assert backup is not None and backup.cloud_storage.data_copied
+        for path, data in source.raw_objects(name).items():
+            target.engine.upload_data(data, path)
+            if "/disks/" in path or "/cloud_storage/" in path:
+                context.legacy_cloud_objects[path] = data
+        # Older copies retained native paths and recorded their source.
+        backup.copied_from = {
+            "endpoint_url": source.node_config["storage"]["credentials"][
+                "endpoint_url"
+            ],
+            "bucket": source.config["storage"]["credentials"]["bucket"],
+            "path_root": source.config["backup"]["path_root"],
+        }
+        target.layout.upload_backup_metadata(backup)
+    child = target.layout.get_backup(names.split(",")[-1])
+    assert child is not None and any(
+        part.link == names.split(",")[0] for part in child.get_parts()
+    )
+    assert context.legacy_cloud_objects
+
+
+@then("legacy cloud archives and payload on {node:w} are unchanged")
+def step_legacy_cloud_objects_unchanged(context, node):
+    storage = BackupStorage(context, node)
+    for path, data in context.legacy_cloud_objects.items():
+        assert storage.engine.download_data(path) == data, path
