@@ -264,12 +264,16 @@ def download_file_pipeline(
 
 
 def download_files_pipeline(
-    config: dict, remote_path: str, local_path: Path, decrypt: bool, decompress: bool
+    config: dict,
+    remote_path: str,
+    local_path: Path,
+    decrypt: bool,
+    decompress: bool,
+    *,
+    local_part: bool = True,
 ) -> None:
-    """
-    Entrypoint of download files pipeline.
-    """
-    builder = PipelineBuilder(config)
+    """Download and extract a TAR with the profile appropriate for its contents."""
+    builder = PipelineBuilder(config, local_restore=local_part)
 
     builder.build_download_storage_stage(remote_path)
     if decrypt:

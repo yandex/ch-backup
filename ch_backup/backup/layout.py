@@ -1155,7 +1155,7 @@ class BackupLayout:
         )
         try:
             self._storage_loader.download_files(
-                remote_path, local_path, encryption=True
+                remote_path, local_path, encryption=True, local_part=False
             )
         except Exception as e:
             msg = f"Failed to download access control metadata file {remote_path}"
@@ -1280,6 +1280,7 @@ class BackupLayout:
                 is_async=True,
                 encryption=part.encrypted,
                 callback=callback,
+                local_part=not part.object_storage,
             )
         except Exception as e:
             raise StorageError(
@@ -1686,6 +1687,7 @@ class BackupLayout:
                         self._storage_loader.download_files(
                             remote_path=remote_path,
                             local_path=dst,
+                            local_part=False,
                             is_async=True,
                             encryption=encryption,
                             compression=compression,

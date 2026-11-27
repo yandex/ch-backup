@@ -19,7 +19,7 @@ from ch_backup.backup.metadata import DetachedPartMetadata, TableMetadata
 from ch_backup.backup.metadata.table_metadata import split_part_name
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.calculators import calc_aligned_files_size
-from ch_backup.clickhouse.client import ClickhouseClient
+from ch_backup.clickhouse.client import ClickhouseClient, ClickhouseError
 from ch_backup.clickhouse.models import (
     DETACH_REASONS,
     Database,
@@ -1221,17 +1221,39 @@ class ClickhouseCTL:
         self._ch_client.query(entity_statement, sensitive=True)
 
     def create_table(self, table: Table) -> None:
-        """
-        Restore table.
+        """Restore a table. ClickHouse 26.11 validates the SELECT on full MV ATTACH.
 
-        A UNIQUE KEY table needs the experimental setting, which ClickHouse checks
-        for CREATE but not for ATTACH. The setting goes per query rather than into
-        the session, because builds without the clause do not have it.
+        Only UNIQUE KEY tables need the experimental setting on builds supporting it.
         """
         settings = (
             {"allow_experimental_unique_key": 1} if table.has_unique_key() else None
         )
-        self._ch_client.query(table.create_statement, settings=settings, sensitive=True)
+        try:
+            self._ch_client.query(
+                table.create_statement, settings=settings, sensitive=True
+            )
+        except ClickhouseError as err:
+            if not (
+                table.is_materialized_view()
+                and table.create_statement.startswith("ATTACH MATERIALIZED VIEW ")
+                and self.ch_version_ge("26.11")
+                and err.server_message.startswith(
+                    "Code: 60. DB::Exception: Unknown table expression identifier "
+                )
+                and "allow_materialized_view_with_bad_select"
+                not in self._ch_client.settings
+            ):
+                raise
+            logging.warning(
+                "Restoring materialized view {}.{} with an unresolved SELECT source",
+                table.database,
+                table.name,
+            )
+            self._ch_client.query(
+                table.create_statement,
+                settings={"allow_materialized_view_with_bad_select": 1},
+                sensitive=True,
+            )
 
     def restore_replica(self, table: Table) -> None:
         """

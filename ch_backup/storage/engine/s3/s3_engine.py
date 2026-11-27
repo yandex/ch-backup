@@ -8,7 +8,7 @@ from tempfile import TemporaryFile
 from typing import Sequence
 
 import requests
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, IncompleteReadError
 
 from ch_backup import logging
 from ch_backup.exceptions import StorageError
@@ -312,9 +312,16 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
         return download_id
 
-    def download_part(self, download_id: str, part_len: int = None) -> bytes | None:
+    def download_part(
+        self, download_id: str, part_len: int = None, *, range_len: int | None = None
+    ) -> bytes | None:
+        """Read a complete range or a bounded chunk of a persistent response."""
         if not part_len:
             part_len = self.DEFAULT_DOWNLOAD_PART_LEN
+        if range_len is not None:
+            if part_len < 1 or range_len < 1:
+                raise ValueError("Download chunk and range sizes must be positive")
+            return self._download_stream_chunk(download_id, part_len, range_len)
 
         download = self._multipart_downloads[download_id]
 
@@ -361,8 +368,61 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         download["range_start"] += len(buffer)
         return buffer if buffer else None
 
+    def _download_stream_chunk(
+        self, download_id: str, chunk_size: int, range_size: int
+    ) -> bytes | None:
+        """Resume failed reads from the first byte not yet returned to the caller."""
+        download = self._multipart_downloads[download_id]
+        start = download["range_start"]
+        if start >= download["total_size"]:
+            return None
+        try:
+            if "body" not in download:
+                end = min(start + range_size, download["total_size"])
+                response = self._s3_client.get_object(
+                    Bucket=self._s3_bucket_name,
+                    Key=download["path"],
+                    Range=f"bytes={start}-{end - 1}",
+                    IfMatch=download["etag"],
+                )
+                download["body"] = response["Body"]
+                if (
+                    response.get("ETag") != download["etag"]
+                    or response.get("ContentRange")
+                    != f"bytes {start}-{end - 1}/{download['total_size']}"
+                    or response.get("ContentLength") != end - start
+                ):
+                    raise StorageError(
+                        "S3 download response does not match the requested object range"
+                    )
+                download["range_end"] = end
+            size = min(chunk_size, download["range_end"] - start)
+            data = download["body"].read(size)
+            if not data:
+                raise IncompleteReadError(actual_bytes=0, expected_bytes=size)
+            if len(data) > size:
+                raise StorageError(
+                    "S3 download response exceeded the requested chunk size"
+                )
+            next_start = start + len(data)
+            if next_start == download["range_end"]:
+                self._close_download_body(download)
+        except BaseException:
+            self._close_download_body(download)
+            raise
+        download["range_start"] = next_start
+        return data
+
+    @staticmethod
+    def _close_download_body(download: dict) -> None:
+        """Release the current response before retry, cancellation or completion."""
+        body = download.pop("body", None)
+        if body is not None:
+            body.close()
+
     def complete_multipart_download(self, download_id):
-        del self._multipart_downloads[download_id]
+        """Close an unfinished response and remove its download state."""
+        self._close_download_body(self._multipart_downloads.pop(download_id))
 
     def get_object_size(self, remote_path: str) -> int:
         """

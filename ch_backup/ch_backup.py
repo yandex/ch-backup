@@ -62,6 +62,7 @@ from ch_backup.logic.partial_restore import PartialRestoreFilter
 from ch_backup.logic.table import TableBackup
 from ch_backup.logic.udf import UDFBackup
 from ch_backup.logic.workload_entities import WorkloadEntitiesBackup
+from ch_backup.storage.async_pipeline.restore import local_restore_options
 from ch_backup.storage.async_pipeline.stages import EncryptStage
 from ch_backup.storage.engine.s3 import validate_s3_retry_config
 from ch_backup.storage.engine.s3.s3_config import validate_s3_module_config
@@ -105,6 +106,9 @@ class ClickhouseBackup:
     @staticmethod
     def _validate_config(config: Config, aws_config: dict | None = None) -> None:
         """Validate operation settings and explicit destructive policies."""
+        if isinstance(config, Config):
+            config.validate_restore_buffers()
+        local_restore_options(config)
         if not isinstance(config["backup"].get("delete_unreadable", False), bool):
             raise ValueError("backup.delete_unreadable must be true or false")
         parse_server_side_copy_mode(config["copy"]["server_side_copy_mode"])

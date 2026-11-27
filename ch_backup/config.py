@@ -5,11 +5,16 @@ config module defines Config class and default values
 import copy
 import socket
 from datetime import datetime, timezone
+from tarfile import BLOCKSIZE
 from typing import Any
 
 import yaml
 from humanfriendly import parse_size, parse_timespan
 from loguru import logger
+from nacl.secret import SecretBox
+
+from ch_backup.calculators import tar_read_buffer_size
+from ch_backup.exceptions import ConfigurationError
 
 
 def _as_seconds(t: str) -> int:
@@ -34,6 +39,12 @@ def as_datetime(value: Any) -> datetime | None:
         raise ValueError(error)
     return value.astimezone(timezone.utc)
 
+
+_DEFAULT_ENCRYPTION_CHUNK = parse_size("8 MiB")
+_RESTORE_WIRE_FRAME = (
+    _DEFAULT_ENCRYPTION_CHUNK + SecretBox.NONCE_SIZE + SecretBox.MACBYTES
+)
+_RESTORE_BUFFER = parse_size("129 MiB")
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "clickhouse": {
@@ -174,6 +185,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "restore": {
         "use_inplace_cloud_restore": False,
+        "largest_parts_first": True,
+        "local_data": {
+            "encryption_queue_size": 2,
+            "filesystem_queue_size": 4,
+            "direct_chunks": True,
+            "direct_write": True,
+            "download_range_size": 0,
+            "decrypt_threads": 1,
+        },
         # Plaintext staging location used to restore cloud storage data encrypted
         # by the copy command. Unset values inherit endpoint, bucket and credentials
         # from the destination ClickHouse disk. An unset path is selected safely at
@@ -290,7 +310,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "enabled": True,
         "type": "nacl",
         # Chunk size used when encrypting / decrypting data, in bytes.
-        "chunk_size": parse_size("8 MiB"),
+        "chunk_size": _DEFAULT_ENCRYPTION_CHUNK,
         # Buffer size, in bytes.
         "buffer_size": parse_size("32 MiB"),
         # Encryption key.
@@ -419,8 +439,30 @@ class Config:
 
     _aws_config_source: dict | None = None
 
-    def __init__(self, config_file: str) -> None:
+    def __init__(self, config_file: str, *, restore: bool = False) -> None:
+        """Load command defaults, then apply the settings supplied by the operator."""
         self._conf = copy.deepcopy(DEFAULT_CONFIG)
+        if restore:
+            self._recursively_update(
+                self._conf,
+                {
+                    "restore": {
+                        "local_data": {
+                            "download_range_size": 16 * _RESTORE_WIRE_FRAME,
+                            "decrypt_threads": 2,
+                        }
+                    },
+                    "storage": {"chunk_size": _RESTORE_WIRE_FRAME},
+                    "filesystem": {
+                        "chunk_size": _DEFAULT_ENCRYPTION_CHUNK,
+                        "buffer_size": _RESTORE_BUFFER,
+                    },
+                    "encryption": {"buffer_size": _RESTORE_BUFFER},
+                    "multiprocessing": {"workers": 2},
+                },
+            )
+        self.restore = restore
+        self._implicit_write_chunk = _DEFAULT_ENCRYPTION_CHUNK if restore else None
         self._read_config(file_name=config_file)
 
     def _recursively_update(self, base_dict, update_dict):
@@ -435,7 +477,50 @@ class Config:
         Merge config with the patch.
         """
         self._recursively_update(self._conf, update_dict=patch_dict)
+        filesystem = patch_dict.get("filesystem", {})
+        if isinstance(filesystem, dict):
+            if "chunk_size" in filesystem:
+                self._implicit_write_chunk = None
+            if "buffer_size" in filesystem:
+                self._fit_restore_chunk()
         return self._conf
+
+    def _fit_restore_chunk(self) -> None:
+        """Fit an implicit write chunk to the buffer on a TAR block boundary."""
+        fs = self._conf["filesystem"]
+        if (
+            self._implicit_write_chunk is not None
+            and fs["chunk_size"] == self._implicit_write_chunk
+        ):
+            size = fs["buffer_size"]
+            if isinstance(size, int) and size >= BLOCKSIZE:
+                self._implicit_write_chunk = min(
+                    _DEFAULT_ENCRYPTION_CHUNK, size // BLOCKSIZE * BLOCKSIZE
+                )
+                fs["chunk_size"] = self._implicit_write_chunk
+
+    def validate_restore_buffers(self) -> None:
+        """Reject invalid TAR write sizes before restore can change the destination."""
+        if self.restore:
+            fs = self._conf["filesystem"]
+            if not isinstance(fs, dict):
+                raise ConfigurationError("filesystem must be a mapping")
+            self._fit_restore_chunk()
+            chunk, buffer = fs["chunk_size"], fs["buffer_size"]
+            if not isinstance(buffer, int) or buffer < BLOCKSIZE:
+                raise ConfigurationError(
+                    f"filesystem.buffer_size must be at least {BLOCKSIZE} bytes"
+                )
+            if isinstance(chunk, bool) or not isinstance(chunk, int) or chunk <= 0:
+                raise ConfigurationError(
+                    "filesystem.chunk_size must be a positive integer"
+                )
+
+            required = tar_read_buffer_size(chunk)
+            if buffer < required:
+                raise ConfigurationError(
+                    f"filesystem.buffer_size must be at least {required} bytes for filesystem.chunk_size={chunk}"
+                )
 
     def derive(
         self, config_file: str | None = None, patch: dict | None = None
@@ -472,7 +557,7 @@ class Config:
     def _read_config(self, file_name):
         custom_config = self._load_config_file(file_name)
         if custom_config:
-            self._recursively_update(self._conf, custom_config)
+            self.merge(custom_config)
 
     @staticmethod
     def _load_config_file(file_name: str) -> dict:

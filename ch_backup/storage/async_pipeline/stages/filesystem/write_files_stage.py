@@ -172,10 +172,37 @@ class WriteFilesStage(TarStreamProcessorBase):
     Unarchive and save files to the local filesystem from TAR stream.
     """
 
-    def __init__(self, config: dict, dir_path: Path, buffer_size: int) -> None:
+    def __init__(
+        self,
+        config: dict,
+        dir_path: Path,
+        buffer_size: int,
+        *,
+        direct_write: bool = False,
+    ) -> None:
+        """Write TAR members, optionally bypassing the FIFO for file payload."""
         super().__init__(config, buffer_size)
         self._dir: Path = dir_path
         self._fobj: IO | None = None
+        self._direct_write = direct_write
+
+    def __call__(self, data: bytes, index: int) -> None:
+        """Write continued file payload directly and parse boundaries as before."""
+        if (
+            self._direct_write
+            and self._state == State.READ_DATA
+            and self._tarstream.empty()
+        ):
+            size = min(len(data), self._bytes_to_process)
+            self._write_data(data[:size])
+            self._bytes_to_process -= size
+            if self._bytes_to_process:
+                return
+            assert self._tarinfo
+            self._state = State.SKIP_BYTES
+            self._bytes_to_process = -self._tarinfo.size % BLOCKSIZE
+            data = data[size:]
+        super().__call__(data, index)
 
     def _on_file_complete(self) -> None:
         if self._fobj:

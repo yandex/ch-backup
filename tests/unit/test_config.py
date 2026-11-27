@@ -15,6 +15,34 @@ from ch_backup.exceptions import ConfigurationError
 
 
 @pytest.mark.parametrize(
+    "name,value",
+    [
+        ("encryption_queue_size", 0),
+        ("filesystem_queue_size", -1),
+        ("filesystem_queue_size", True),
+        ("decrypt_threads", 0),
+        ("decrypt_threads", 1.5),
+        ("download_range_size", -1),
+        ("download_range_size", "32 MiB"),
+        ("direct_chunks", "true"),
+        ("direct_write", 1),
+    ],
+)
+def test_restore_pipeline_options_rejected_before_context(tmp_path, name, value):
+    """Reject unsafe pipeline limits before any restore can change live tables."""
+    path = tmp_path / "config.yaml"
+    path.write_text("")
+    config = Config(str(path))
+    config["restore"]["local_data"][name] = value
+    with (
+        patch("ch_backup.ch_backup.BackupContext") as context,
+        pytest.raises(ConfigurationError, match=f"restore.local_data.{name}"),
+    ):
+        ClickhouseBackup(config)
+    context.assert_not_called()
+
+
+@pytest.mark.parametrize(
     "value",
     [
         None,

@@ -260,6 +260,8 @@ class PipelineExecutor:
         compression: bool,
         callback: Callable | None,
         on_error: Callable[[BaseException], None] | None = None,
+        *,
+        local_part: bool = True,
     ) -> None:
         """
         Download and unarchive tarball to files on local filesystem.
@@ -273,6 +275,7 @@ class PipelineExecutor:
             Path(local_path),
             encryption,
             compression,
+            local_part=local_part,
         )
         self._exec_pipeline(job_id, pipeline, is_async, callback, on_error)
 

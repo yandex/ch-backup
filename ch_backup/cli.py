@@ -160,7 +160,7 @@ def cli(
     if insecure:
         ca_path = False
 
-    cfg = Config(config)
+    cfg = Config(config, restore=ctx.invoked_subcommand == "restore")
     if host is not None:
         cfg["clickhouse"]["host"] = host
     if protocol is not None:

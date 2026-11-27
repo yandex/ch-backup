@@ -250,15 +250,18 @@ def test_unpack_data_tarball_larger_than_buffer() -> None:
 
 
 @pytest.mark.parametrize("cut", [1, 511, 512, 562, 613, 1023])
-@pytest.mark.parametrize("disk", [False, True])
-def test_tar_rejects_truncated_header_payload_or_padding(tmp_path, cut, disk):
+@pytest.mark.parametrize("mode", ["unpack", "write", "direct_write"])
+def test_tar_rejects_truncated_header_payload_or_padding(tmp_path, cut, mode):
     header = tarfile.TarInfo("data.bin")
     header.size = 100
     stream = header.tobuf(format=tarfile.GNU_FORMAT) + b"x" * 100 + b"\0" * 412
     stage = (
-        WriteFilesStage({}, tmp_path, 4096) if disk else UnpackTarballStage({}, 4096)
+        UnpackTarballStage({}, 4096)
+        if mode == "unpack"
+        else WriteFilesStage({}, tmp_path, 4096, direct_write=mode == "direct_write")
     )
-    stage(stream[:cut], 0)
+    for pos in range(0, cut, 64):
+        stage(stream[pos : min(cut, pos + 64)], pos)
     with pytest.raises(ValueError, match="Truncated TAR"):
         list(stage.on_done() or [])
 
@@ -275,14 +278,16 @@ def test_tar_accepts_complete_files_without_end_blocks(tmp_path, name):
     assert (tmp_path / name).read_bytes() == b"x" * 100
 
 
-def test_tar_accepts_legacy_final_file_without_padding(tmp_path):
+@pytest.mark.parametrize("direct_write", [False, True])
+def test_tar_accepts_legacy_final_file_without_padding(tmp_path, direct_write):
     # Before 3dd4904a, a 513-byte file with filesystem.chunk_size=513 was
     # written as a header and a full read chunk, without the 511 padding bytes.
     header = tarfile.TarInfo("checksums.txt")
     header.size = 513
     data = b"x" * header.size
-    stage = WriteFilesStage({}, tmp_path, 4096)
-    stage(header.tobuf() + data, 0)
+    stage = WriteFilesStage({}, tmp_path, 4096, direct_write=direct_write)
+    stage(header.tobuf(), 0)
+    stage(data, 1)
     stage.on_done()
     assert (tmp_path / header.name).read_bytes() == data
 

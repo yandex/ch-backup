@@ -41,7 +41,7 @@ dependencies = [
     "loguru >= 0.7",
     "packaging",
     "psutil >= 7.0",
-    "pynacl >= 1.2",
+    "pynacl >= 1.6.2",
     "pypeln >= 0.4.9",
     "pyyaml >= 5.4",
     "requests >= 2.20",

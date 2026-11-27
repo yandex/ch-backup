@@ -1886,7 +1886,16 @@ class TableBackup(BackupManager):
                 for data_path, disk in table.paths_with_disks:
                     if disk.type == "local":
                         local_parts.prepare(Path(data_path) / "detached")
-                for part in table_meta.get_parts():
+                parts = table_meta.get_parts()
+                if context.config_root["restore"].get("largest_parts_first", True):
+                    parts.sort(
+                        key=lambda part: (
+                            0
+                            if part.disk_name in context.backup_meta.cloud_storage.disks
+                            else -part.size
+                        )
+                    )
+                for part in parts:
                     if context.restore_context.part_restored(part):
                         if part.disk_name in context.backup_meta.cloud_storage.disks:
                             # Retry marker cleanup if the previous invocation stopped

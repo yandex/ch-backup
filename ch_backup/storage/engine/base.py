@@ -102,9 +102,9 @@ class PipeLineCompatibleStorageEngine(StorageEngine):
         pass
 
     @abstractmethod
-    def download_part(self, download_id, part_len=None):
+    def download_part(self, download_id, part_len=None, *, range_len=None):
         """
-        Download data part in multipart download.
+        Read one chunk, optionally keeping a larger HTTP range open between calls.
         """
         pass
 

@@ -1,0 +1,16 @@
+restore:
+  local_data:
+    decrypt_threads: 2
+    download_range_size: 134218368
+    direct_chunks: true
+    direct_write: true
+storage:
+  chunk_size: 8388648
+encryption:
+  chunk_size: 8388608
+  buffer_size: 135266304
+filesystem:
+  chunk_size: 8388608
+  buffer_size: 135266304
+multiprocessing:
+  workers: 2
